@@ -198,14 +198,15 @@ if df_total is not None:
         }
         # --- FIN DE LA CORRECCIÓN 2 ---
 
-        # Crear el mapa (Deck)
-        r = pdk.Deck(
-            layers=[scatterplot_layer, text_layer],
-            initial_view_state=view_state,
-            map_style='mapbox://styles/mapbox/dark-v9',
-            tooltip=tooltip
-        )
-
+       # Crear el mapa (Deck)
+r = pdk.Deck(
+    layers=[scatterplot_layer, text_layer],
+    initial_view_state=view_state,
+    map_style='mapbox://styles/mapbox/dark-v9', # Estilo oscuro
+    tooltip=tooltip,
+    # --- ¡LÍNEA AÑADIDA PARA EL TOKEN! ---
+    mapbox_key=st.secrets["MAPBOX_API_KEY"]
+)
         # Renderizar el mapa en Streamlit
         st.pydeck_chart(r, use_container_width=True)
         
