@@ -106,31 +106,33 @@ if df_total is not None:
                 "style": {"backgroundColor": "rgba(0,0,0,0)", "border": "none"}
             }
 
-            # --- VERIFICAR INDENTACIÓN AQUÍ ---
+            # --- INICIO DE LA CORRECCIÓN ---
+            # Crear el mapa (Deck) - Quitamos mapbox_key
             r = pdk.Deck(
                 layers=[scatterplot_layer, text_layer],
                 initial_view_state=view_state,
-                map_style='mapbox://styles/mapbox/dark-v9',
-                tooltip=tooltip,
-                mapbox_key=st.secrets["MAPBOX_API_KEY"] # <-- Asegúrate de que esta línea esté bien indentada
+                map_style='mapbox://styles/mapbox/dark-v9', # Estilo oscuro
+                tooltip=tooltip
+                # Ya NO pasamos mapbox_key aquí
             )
-            # --- FIN DE VERIFICACIÓN ---
+            # --- FIN DE LA CORRECCIÓN ---
 
+            # Renderizar el mapa en Streamlit
             st.pydeck_chart(r, use_container_width=True)
 
             st.subheader("Datos Detallados del Mapa")
             st.dataframe(df_mapa[['Farmacia_ID', 'Zona_Farmacia', 'Total_Ventas_Euros', 'Total_Unidades', 'lat', 'lon']], use_container_width=True)
 
+        # Añadimos un catch específico para el error de Secrets si vuelve a aparecer
         except KeyError as e:
-            if str(e) == "'MAPBOX_API_KEY'":
+            if "MAPBOX_API_KEY" in str(e):
                  st.error("🚨 ¡Error Clave Mapbox! No se encontró MAPBOX_API_KEY en los Secrets.")
-                 st.info("Asegúrate de haber añadido tu token de Mapbox a los Secrets de Streamlit Cloud (Manage app -> Settings -> Secrets).")
+                 st.info("Asegúrate de haber añadido tu token de Mapbox a los Secrets de Streamlit Cloud (Manage app -> Settings -> Secrets) con el formato correcto: MAPBOX_API_KEY = \"pk.ey...\".")
             else:
-                 st.error(f"💥 ¡Error inesperado al crear el mapa: {e}")
+                 st.error(f"💥 ¡Error inesperado al crear el mapa: Clave no encontrada '{e}'")
         except Exception as e:
             st.error(f"💥 ¡Error al renderizar el mapa Pydeck!")
             st.error(f"Detalles: {e}")
-
 
 else:
     st.error("Error al cargar los datos.")
