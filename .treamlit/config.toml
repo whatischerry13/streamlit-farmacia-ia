@@ -1,0 +1,18 @@
+[theme]
+# El tema base (dark o light)
+base = "dark"
+
+# Color de fondo principal
+backgroundColor = "#0E1117"
+
+# Color de fondo de la barra lateral
+secondaryBackgroundColor = "#1f4ee6ff"
+
+# Color del texto principal
+textColor = "#FAFAFA"
+
+# Color de los widgets (sliders, botones, etc.)
+primaryColor = "#00BFFF"  # Un azul eléctrico/cyan brillante
+
+# Fuente (opcional, pero limpio)
+font = "sans serif"
