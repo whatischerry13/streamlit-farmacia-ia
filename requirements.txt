@@ -1,0 +1,10 @@
+pandas
+xgboost
+altair
+streamlit
+streamlit-folium
+scikit-learn
+mlxtend
+statsmodels
+pydeck
+joblib
