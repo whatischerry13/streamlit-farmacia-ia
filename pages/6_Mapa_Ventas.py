@@ -6,9 +6,9 @@ import pydeck as pdk
 st.set_page_config(page_title="Mapa de Ventas", page_icon="🗺️", layout="wide")
 
 # --- FUNCIONES DE DATOS (CON CACHÉ) ---
-# ... (tus funciones cargar_datos y simular_coordenadas van aquí, sin cambios) ...
 @st.cache_data
 def cargar_datos(file_name='ventas_farmacia_fake.csv'):
+    # ... (código igual que antes) ...
     try:
         df = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
         df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
@@ -19,6 +19,7 @@ def cargar_datos(file_name='ventas_farmacia_fake.csv'):
 
 @st.cache_data
 def simular_coordenadas(_df_total):
+    # ... (código igual que antes) ...
     farmacias = _df_total[['Farmacia_ID', 'Zona_Farmacia']].drop_duplicates()
     coordenadas_base = {'Centro': [40.4168, -3.7038], 'Norte': [40.4531, -3.6883], 'Sur': [40.3833, -3.7167]}
     np.random.seed(42)
@@ -34,15 +35,15 @@ def simular_coordenadas(_df_total):
     return farmacias
 
 # --- INTERFAZ DE STREAMLIT ---
-st.title("🗺️ Mapa de Rendimiento Geoespacial")
-st.markdown("Análisis 3D de las ventas y rentabilidad por ubicación geográfica.")
+st.title("🗺️ Mapa de Rendimiento Geoespacial (Prueba Simplificada)")
+st.markdown("Análisis 3D de las ventas por ubicación geográfica.")
 
 df_total = cargar_datos()
 if df_total is not None:
     df_coordenadas = simular_coordenadas(df_total)
 
-    # --- FILTROS EN LA BARRA LATERAL ---
-    # ... (tus filtros van aquí, sin cambios) ...
+    # --- FILTROS ---
+    # ... (filtros iguales que antes) ...
     st.sidebar.title("Filtros del Mapa")
     lista_categorias = ['Todas'] + sorted(list(df_total['Categoria'].unique()))
     cat_sel = st.sidebar.selectbox("Filtrar por Categoría:", options=lista_categorias, index=0, key='mapa_categoria')
@@ -52,7 +53,7 @@ if df_total is not None:
     rango_fechas = st.sidebar.date_input("Selecciona un rango de fechas:", value=[fecha_min, fecha_max], min_value=fecha_min, max_value=fecha_max, key='mapa_fechas')
 
     # --- Aplicar Filtros ---
-    # ... (tu lógica de filtrado va aquí, sin cambios) ...
+    # ... (lógica de filtrado igual que antes) ...
     if len(rango_fechas) == 2:
         df_filtrado = df_total[(df_total['Fecha'] >= rango_fechas[0]) & (df_total['Fecha'] <= rango_fechas[1])]
         if cat_sel != 'Todas':
@@ -60,15 +61,12 @@ if df_total is not None:
     else:
         df_filtrado = df_total.copy()
 
-    # --- AGREGACIÓN DE DATOS PARA EL MAPA ---
-    # ... (tu lógica de agregación y cálculo de df_mapa va aquí, sin cambios) ...
+    # --- AGREGACIÓN DE DATOS ---
+    # ... (lógica de agregación y cálculo de df_mapa igual que antes) ...
     df_agg_farmacia = df_filtrado.groupby('Farmacia_ID').agg(
-        Total_Ventas_Euros=('Total_Venta_€', 'sum'),
-        Total_Unidades=('Cantidad', 'sum')
+        Total_Ventas_Euros=('Total_Venta_€', 'sum'), Total_Unidades=('Cantidad', 'sum')
     ).reset_index()
     df_mapa = df_coordenadas.merge(df_agg_farmacia, on='Farmacia_ID', how='left').fillna(0)
-    df_mapa['Ventas_str'] = df_mapa['Total_Ventas_Euros'].apply(lambda x: f"{x:,.0f} €")
-    df_mapa['Unidades_str'] = df_mapa['Total_Unidades'].apply(lambda x: f"{x:,.0f}")
     zona_color_map = {'Centro': [0, 191, 255, 180], 'Norte': [50, 205, 50, 180], 'Sur': [255, 69, 0, 180]}
     df_mapa['color'] = df_mapa['Zona_Farmacia'].apply(lambda z: zona_color_map.get(z, [128, 128, 128, 160]))
     if metrica_sel == 'Total Ventas (€)': columna_size = 'Total_Ventas_Euros'
@@ -82,62 +80,55 @@ if df_total is not None:
     if df_mapa.empty:
         st.warning("No se encontraron datos con los filtros seleccionados.")
     else:
-        # --- INICIO DE LA DEPURACIÓN ---
+        # --- INICIO DE LA SIMPLIFICACIÓN ---
         st.subheader("🕵️ Datos para el Mapa (Depuración)")
-        st.markdown("Verifica que las columnas `lat`, `lon`, `radius_meters` sean numéricas y no tengan valores nulos (NaN).")
-        st.write("Tipos de datos:")
-        st.dataframe(df_mapa.dtypes.astype(str)) # Muestra los tipos de datos
-        st.write("Valores Nulos:")
-        st.dataframe(df_mapa.isna().sum()) # Muestra la cuenta de nulos por columna
-        st.dataframe(df_mapa) # Muestra la tabla completa
-        st.divider()
-        # --- FIN DE LA DEPURACIÓN ---
+        st.write("Verificando datos antes de renderizar el mapa simplificado...")
+        st.dataframe(df_mapa[['Farmacia_ID', 'lat', 'lon', 'radius_meters', 'color']])
 
-        # --- Creación del Mapa Pydeck ---
         try:
+            # Vista inicial del mapa
             view_state = pdk.ViewState(
                 latitude=df_mapa['lat'].mean(),
                 longitude=df_mapa['lon'].mean(),
                 zoom=11.5,
                 pitch=50
             )
+
+            # Crear SÓLO la capa de burbujas
             scatterplot_layer = pdk.Layer(
-                'ScatterplotLayer', data=df_mapa, get_position='[lon, lat]', get_color='color',
-                get_radius='radius_meters', opacity=0.7, stroked=True, filled=True,
-                wireframe=True, get_line_color=[255, 255, 255, 100], get_line_width_min_pixels=1,
-                pickable=True, auto_highlight=True, highlight_color=[255, 255, 255, 200]
+                'ScatterplotLayer',
+                data=df_mapa,
+                get_position='[lon, lat]',
+                get_color='color',
+                get_radius='radius_meters',
+                pickable=True, # Aún podemos intentar que sea interactiva
+                opacity=0.7
             )
-            text_layer = pdk.Layer(
-                'TextLayer', data=df_mapa, get_position='[lon, lat]', get_text='Farmacia_ID',
-                get_size=12, get_alignment_baseline="'bottom'", get_text_anchor="'middle'",
-                get_pixel_offset=[0, -15], get_color=[255, 255, 255, 200],
-                outline_width=2, outline_color=[0, 0, 0, 255], pickable=False
-            )
-            tooltip = {
-                "html": """<div style="background:#222;color:white;padding:10px;border-radius:5px;font-family:sans-serif;">
-                           <b>{Farmacia_ID}</b> ({Zona_Farmacia})<br/>
-                           <b>Ventas:</b> {Ventas_str}<br/>
-                           <b>Unidades:</b> {Unidades_str}</div>""",
-                "style": {"backgroundColor": "rgba(0,0,0,0)", "border": "none"}
-            }
+
+            # Crear el mapa SÓLO con la capa de burbujas
             r = pdk.Deck(
-                layers=[scatterplot_layer, text_layer],
+                layers=[scatterplot_layer], # <-- SOLO UNA CAPA
                 initial_view_state=view_state,
                 map_style='mapbox://styles/mapbox/dark-v9',
-                tooltip=tooltip
+                # Sin tooltip complejo por ahora
+                tooltip={"text": "{Farmacia_ID}\nVentas: {Total_Ventas_Euros}\nUnidades: {Total_Unidades}"}
             )
 
-            # Renderizar el mapa en Streamlit
-            st.pydeck_chart(r, use_container_width=True) # <-- Corregido el aviso de obsolescencia
-
-            st.subheader("Datos Detallados del Mapa")
-            # Muestra la tabla original (sin las columnas de depuración si quieres)
-            st.dataframe(df_mapa[['Farmacia_ID', 'Zona_Farmacia', 'Total_Ventas_Euros', 'Total_Unidades', 'lat', 'lon']], use_container_width=True)
+            # Renderizar el mapa
+            st.pydeck_chart(r, use_container_width=True)
+            st.success("Intento de renderizar mapa simplificado.")
 
         except Exception as e:
-            st.error("💥 ¡Error al renderizar el mapa Pydeck!")
+            st.error("💥 ¡Error al renderizar el mapa Pydeck SIMPLIFICADO!")
             st.error(f"Detalles: {e}")
-            st.warning("Revisa los datos de depuración de arriba. ¿Hay algún NaN o tipo de dato incorrecto?")
+        # --- FIN DE LA SIMPLIFICACIÓN ---
+
+        st.divider()
+        st.subheader("Datos Detallados del Mapa (Original)")
+        st.dataframe(df_mapa[['Farmacia_ID', 'Zona_Farmacia', 'Total_Ventas_Euros', 'Total_Unidades', 'lat', 'lon']], use_container_width=True)
+
+else:
+    st.error("Error al cargar los datos.")
 
 else:
     st.error("Error al cargar los datos.")
