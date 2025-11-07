@@ -5,16 +5,16 @@ import streamlit as st
 import warnings
 import joblib
 from datetime import datetime
+import holidays # <-- Importación necesaria
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 st.set_page_config(page_title="Alerta de Stock (IA)", layout="wide")
 
-# --- 1. Paleta de Colores Profesional (Con Azul Suave) ---
-COLOR_ALTA = "#9B2B2B"     # Rojo Ladrillo (Dark Red)
+# --- 1. Paleta de Colores Profesional (Suave) ---
+COLOR_ALTA = "#9B2B2B"     # Rojo Oscuro (Dark Red)
 COLOR_MEDIA = "#B9770E"    # Ámbar Oscuro (Dark Amber)
-COLOR_BAJA = "#4682B4"     # Azul Acero (SteelBlue) <-- ¡CAMBIO A AZUL!
-# Las filas "OK" se quedarán en blanco (sin color)
+COLOR_BAJA = "#4682B4"     # Azul Acero (SteelBlue)
 
 # --- 2. Función de Descarga ---
 @st.cache_data
@@ -56,36 +56,71 @@ def cargar_modelos(file_name='modelos_farmacia.joblib'):
         st.info("Por favor, ejecuta el script 'train_models.py' en tu terminal.")
         return None
 
+# --- ¡NUEVA FUNCIÓN! Cargar datos climáticos ---
+@st.cache_data
+def cargar_clima(file_name='clima_madrid.csv'):
+    """Carga los datos climáticos descargados."""
+    try:
+        df_clima = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
+        df_clima['Fecha'] = pd.to_datetime(df_clima['Fecha']).dt.date
+        return df_clima
+    except FileNotFoundError:
+        st.warning(f"Advertencia: No se encontró '{file_name}'. El pronóstico funcionará sin datos climáticos.")
+        return None
+
 # --- Funciones de Predicción Avanzada ---
 def simular_festivos(df_fechas):
-    """Simula días festivos para los datos de predicción."""
+    """
+    Usa la librería 'holidays' para crear la feature 'es_festivo'.
+    Asume que df_fechas tiene una columna 'ds'.
+    """
     df = df_fechas.copy()
-    df['dia_del_ano'] = df['ds'].dt.dayofyear
-    df['dia_de_la_semana'] = df['ds'].dt.dayofweek
-    festivos_fijos = [1, 121, 359] 
-    es_puente = (df['dia_de_la_semana'] == 4) & (df['dia_del_ano'] % 100 == 0)
-    df['es_festivo'] = df['dia_del_ano'].isin(festivos_fijos) | es_puente
-    df['es_festivo'] = df['es_festivo'].astype(int)
+    # Festivos Reales (España), +1 año para predicciones
+    festivos_espana = holidays.Spain(years=[2022, 2023, 2024, 2025])
+    df['es_festivo'] = df['ds'].isin(festivos_espana).astype(int)
     return df
 
-def crear_features_avanzadas_para_prediccion(df_diario, df_futuro):
-    """Crea las features (lag, rolling) para el set de predicción."""
+def crear_features_avanzadas_para_prediccion(df_diario, df_futuro, df_clima):
+    """
+    Crea las features (lag, rolling, clima, festivos) para el set de predicción.
+    """
     df_diario_copy = df_diario.set_index('ds')
     df_futuro_copy = df_futuro.set_index('ds')
+    
     df = pd.concat([df_diario_copy, df_futuro_copy])
-    df['mes'] = df.index.month
-    df['dia_del_ano'] = df.index.dayofyear
-    df['dia_de_la_semana'] = df.index.dayofweek
-    df['ano'] = df.index.year
-    df = simular_festivos(df.reset_index()).set_index('ds')
+    df = df.reset_index() # 'ds' es ahora una columna
+
+    # 1. Características de tiempo
+    df['mes'] = df['ds'].dt.month
+    df['dia_del_ano'] = df['ds'].dt.dayofyear
+    df['dia_de_la_semana'] = df['ds'].dt.dayofweek
+    df['ano'] = df['ds'].dt.year
+    
+    # 2. Características Externas (Reales y Simuladas)
+    df = simular_festivos(df) # <-- Pasa el df con la columna 'ds'
+    df['temporada_gripe'] = df['mes'].isin([10, 11, 12, 1, 2, 3]).astype(int)
+    df['temporada_polen'] = df['mes'].isin([3, 4, 5, 6]).astype(int)
+    
+    if df_clima is not None:
+        df_clima_copy = df_clima.copy()
+        df_clima_copy['ds'] = pd.to_datetime(df_clima_copy['Fecha'])
+        df = df.merge(df_clima_copy[['ds', 'Temperatura_Media']], on='ds', how='left')
+        df['Temperatura_Media'] = df['Temperatura_Media'].fillna(method='ffill').fillna(method='bfill')
+    else:
+        df['Temperatura_Media'] = 15.0 # Valor neutro
+    
+    # 3. Características de Retraso (Lag) y Móviles (Rolling)
+    df = df.set_index('ds') # Volver a poner 'ds' como índice para shift/rolling
     df['ventas_lag_1'] = df['y'].shift(1)
     df['ventas_lag_7'] = df['y'].shift(7)
     df['media_movil_7d'] = df['y'].shift(1).rolling(window=7, min_periods=1).mean()
     df['media_movil_30d'] = df['y'].shift(1).rolling(window=30, min_periods=1).mean()
-    df = df.bfill()
+    
+    df = df.bfill().reset_index() # Devolver 'ds' como columna
+    
     return df.iloc[-len(df_futuro):]
 
-def generar_pronostico_avanzado(model, df_historico, dias_a_pronosticar, fecha_maxima_historica):
+def generar_pronostico_avanzado(model, df_historico, df_clima, dias_a_pronosticar, fecha_maxima_historica):
     """Genera la predicción de demanda usando el modelo AVANZADO."""
     fecha_max_dt = pd.to_datetime(fecha_maxima_historica)
     fechas_futuras = pd.date_range(start=fecha_max_dt + pd.Timedelta(days=1), periods=dias_a_pronosticar, freq='D')
@@ -93,8 +128,17 @@ def generar_pronostico_avanzado(model, df_historico, dias_a_pronosticar, fecha_m
     df_diario = df_historico.groupby('Fecha')['Cantidad'].sum().reset_index()
     df_diario = df_diario.rename(columns={'Fecha': 'ds', 'Cantidad': 'y'})
     df_diario['ds'] = pd.to_datetime(df_diario['ds'])
-    df_futuro_features = crear_features_avanzadas_para_prediccion(df_diario, df_futuro_base)
-    features = ['mes', 'dia_del_ano', 'dia_de_la_semana', 'ano', 'es_festivo', 'ventas_lag_1', 'ventas_lag_7', 'media_movil_7d', 'media_movil_30d']
+    
+    # --- ¡CORRECCIÓN! Pasar 'df_clima' a la función ---
+    df_futuro_features = crear_features_avanzadas_para_prediccion(df_diario, df_futuro_base, df_clima)
+
+    features = [
+        'mes', 'dia_del_ano', 'dia_de_la_semana', 'ano', 'es_festivo',
+        'temporada_gripe', 'temporada_polen', 'Temperatura_Media',
+        'ventas_lag_1', 'ventas_lag_7',
+        'media_movil_7d', 'media_movil_30d'
+    ]
+    
     df_futuro_features = df_futuro_features.fillna(0)
     X_pred = df_futuro_features[features]
     
@@ -113,6 +157,7 @@ Luego, prioriza automáticamente las alertas (Alta, Media, Baja) para que el equ
 
 df_total = cargar_datos()
 datos_modelos = cargar_modelos()
+df_clima = cargar_clima() # <-- ¡AÑADIR CARGA DE CLIMA!
 
 if df_total is not None and datos_modelos is not None:
     df_stock_actual = simular_stock_actual(df_total)
@@ -145,9 +190,7 @@ if df_total is not None and datos_modelos is not None:
     PRIORIDAD_MEDIA_DIAS = 7
     
     st.sidebar.markdown("---")
-    
-    # --- 3. Leyenda de Colores Limpia y Profesional ---
-    st.sidebar.markdown("**Leyenda de Prioridad**") # Título más pequeño
+    st.sidebar.markdown("**Leyenda de Prioridad**")
     
     st.sidebar.markdown(f"""
     <div style="padding: 6px; border-radius: 5px; background-color: {COLOR_ALTA}; color: white; margin-bottom: 5px; font-family: sans-serif; font-size: 0.9rem;">
@@ -163,7 +206,7 @@ if df_total is not None and datos_modelos is not None:
         <strong>OK:</strong> Stock suficiente
     </div>
     """, unsafe_allow_html=True)
-    # --- FIN DE MEJORA DE LEYENDA ---
+
 
     if st.button("Generar Reporte de Priorización", type="primary", use_container_width=True):
         df_a_revisar = df_stock_actual.copy()
@@ -203,7 +246,8 @@ if df_total is not None and datos_modelos is not None:
                     (df_total['Producto'] == producto)
                 ]
                 
-                predicciones_diarias = generar_pronostico_avanzado(modelo, df_historico_producto, dias_a_pronosticar, fecha_max_hist)
+                # --- ¡CORRECCIÓN! Pasar 'df_clima' a la función ---
+                predicciones_diarias = generar_pronostico_avanzado(modelo, df_historico_producto, df_clima, dias_a_pronosticar, fecha_max_hist)
                 demanda_predicha_total = predicciones_diarias.sum()
                 
                 stock_seguridad_unidades = demanda_predicha_total * (stock_seguridad_pct / 100)
@@ -247,36 +291,38 @@ if df_total is not None and datos_modelos is not None:
             if df_resultados.empty:
                 st.warning("No se generaron resultados de alerta para los filtros seleccionados (excluyendo productos sin datos).")
             else:
-                columnas_ordenadas = [
+                columnas_resumen = ["Farmacia", "Producto", "Prioridad", "Días hasta Rotura"]
+                df_resumen = df_resultados[columnas_resumen]
+                
+                columnas_detalle = [
                     "Farmacia", "Producto", "Prioridad", "Días hasta Rotura", 
                     "Stock Actual", "Stock de Seguridad", "Stock Útil", 
                     f"Demanda Predicha ({dias_a_pronosticar} días)"
                 ]
-                df_resultados = df_resultados[columnas_ordenadas]
-
+                df_detalle = df_resultados[columnas_detalle]
+                
                 def estilizar_prioridad(fila):
                     color = ""
-                    if fila.Prioridad == "Alta":
-                        color = COLOR_ALTA
-                    elif fila.Prioridad == "Media":
-                        color = COLOR_MEDIA
-                    elif fila.Prioridad == "Baja":
-                        color = COLOR_BAJA
+                    if fila.Prioridad == "Alta": color = COLOR_ALTA
+                    elif fila.Prioridad == "Media": color = COLOR_MEDIA
+                    elif fila.Prioridad == "Baja": color = COLOR_BAJA
                     
                     if color:
-                        # Aplicamos el color solo a la fila, pero dejamos el texto blanco/claro
                         return [f'background-color: {color}; color: white'] * len(fila)
                     else:
-                        # Devuelve vacío para las filas "OK" (usa el tema por defecto)
                         return [''] * len(fila)
 
-                st.dataframe(df_resultados.style.apply(estilizar_prioridad, axis=1), use_container_width=True)
+                st.header("Lista de Prioridades (Resumen)")
+                st.dataframe(df_resumen.style.apply(estilizar_prioridad, axis=1), use_container_width=True)
                 
-                csv_data = convert_df_to_csv(df_resultados)
+                with st.expander("Ver cálculos y detalles completos"):
+                    st.dataframe(df_detalle, use_container_width=True)
+                
+                csv_data = convert_df_to_csv(df_detalle)
                 st.download_button(
-                    label="Descargar Reporte de Priorización en CSV",
+                    label="Descargar Reporte Detallado en CSV",
                     data=csv_data,
-                    file_name=f"reporte_priorizacion_{datetime.now().strftime('%Y%m%d')}.csv",
+                    file_name=f"reporte_priorizacion_detallado.csv",
                     mime='text/csv',
                     use_container_width=True
                 )

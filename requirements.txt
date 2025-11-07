@@ -8,3 +8,4 @@ mlxtend
 statsmodels
 pydeck
 joblib
+holidays  

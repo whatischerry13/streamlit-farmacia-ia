@@ -6,10 +6,11 @@ import warnings
 import joblib
 from datetime import datetime, timedelta
 import altair as alt
+import holidays # <-- ¡Importación necesaria!
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-# --- 1. Configuración de Página ---
+# --- 1. Configuración de Página (con layout="wide") ---
 st.set_page_config(page_title="Simulador de Escenarios", layout="wide")
 
 # --- 2. Función de Descarga ---
@@ -52,47 +53,92 @@ def cargar_modelos(file_name='modelos_farmacia.joblib'):
         st.info("Por favor, ejecuta el script 'train_models.py' en tu terminal.")
         return None
 
+# --- ¡NUEVA FUNCIÓN! Cargar datos climáticos ---
+@st.cache_data
+def cargar_clima(file_name='clima_madrid.csv'):
+    """Carga los datos climáticos descargados."""
+    try:
+        df_clima = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
+        df_clima['Fecha'] = pd.to_datetime(df_clima['Fecha']).dt.date
+        return df_clima
+    except FileNotFoundError:
+        st.warning(f"Advertencia: No se encontró '{file_name}'. El pronóstico funcionará sin datos climáticos.")
+        return None
+
 # --- Funciones de Predicción Avanzada ---
 def simular_festivos(df_fechas):
-    """Simula días festivos para los datos de predicción."""
+    """
+    Usa la librería 'holidays' para crear la feature 'es_festivo'.
+    Asume que df_fechas tiene una columna 'ds'.
+    """
     df = df_fechas.copy()
-    df['dia_del_ano'] = df['ds'].dt.dayofyear
-    df['dia_de_la_semana'] = df['ds'].dt.dayofweek
-    festivos_fijos = [1, 121, 359] 
-    es_puente = (df['dia_de_la_semana'] == 4) & (df['dia_del_ano'] % 100 == 0)
-    df['es_festivo'] = df['dia_del_ano'].isin(festivos_fijos) | es_puente
-    df['es_festivo'] = df['es_festivo'].astype(int)
+    festivos_espana = holidays.Spain(years=[2022, 2023, 2024, 2025]) # +1 año para predicción
+    df['es_festivo'] = df['ds'].isin(festivos_espana).astype(int)
     return df
 
-def crear_features_avanzadas_para_prediccion(df_diario, df_futuro):
-    """Crea las features (lag, rolling) para el set de predicción."""
+def crear_features_avanzadas_para_prediccion(df_diario, df_futuro, df_clima):
+    """
+    Crea las features (lag, rolling, clima, festivos) para el set de predicción.
+    """
     df_diario_copy = df_diario.set_index('ds')
     df_futuro_copy = df_futuro.set_index('ds')
     df = pd.concat([df_diario_copy, df_futuro_copy])
-    df['mes'] = df.index.month
-    df['dia_del_ano'] = df.index.dayofyear
-    df['dia_de_la_semana'] = df.index.dayofweek
-    df['ano'] = df.index.year
-    df = simular_festivos(df.reset_index()).set_index('ds')
+    df = df.reset_index() # 'ds' es ahora una columna
+
+    # 1. Características de tiempo
+    df['mes'] = df['ds'].dt.month
+    df['dia_del_ano'] = df['ds'].dt.dayofyear
+    df['dia_de_la_semana'] = df['ds'].dt.dayofweek
+    df['ano'] = df['ds'].dt.year
+    
+    # 2. Características Externas (Reales y Simuladas)
+    df = simular_festivos(df) # <-- Pasa el df con la columna 'ds'
+    df['temporada_gripe'] = df['mes'].isin([10, 11, 12, 1, 2, 3]).astype(int)
+    df['temporada_polen'] = df['mes'].isin([3, 4, 5, 6]).astype(int)
+    
+    if df_clima is not None:
+        df_clima_copy = df_clima.copy()
+        df_clima_copy['ds'] = pd.to_datetime(df_clima_copy['Fecha'])
+        df = df.merge(df_clima_copy[['ds', 'Temperatura_Media']], on='ds', how='left')
+        df['Temperatura_Media'] = df['Temperatura_Media'].fillna(method='ffill').fillna(method='bfill')
+    else:
+        df['Temperatura_Media'] = 15.0 # Valor neutro
+    
+    # 3. Características de Retraso (Lag) y Móviles (Rolling)
+    df = df.set_index('ds') # Volver a poner 'ds' como índice para shift/rolling
     df['ventas_lag_1'] = df['y'].shift(1)
     df['ventas_lag_7'] = df['y'].shift(7)
     df['media_movil_7d'] = df['y'].shift(1).rolling(window=7, min_periods=1).mean()
     df['media_movil_30d'] = df['y'].shift(1).rolling(window=30, min_periods=1).mean()
-    df = df.bfill()
+    
+    df = df.bfill().reset_index() # Devolver 'ds' como columna
+    
     return df.iloc[-len(df_futuro):]
 
-def generar_pronostico_avanzado(model, df_historico, dias_a_pronosticar, fecha_maxima_historica):
+def generar_pronostico_avanzado(model, df_historico, df_clima, dias_a_pronosticar, fecha_maxima_historica):
     """Genera la predicción de demanda usando el modelo AVANZADO."""
     fecha_max_dt = pd.to_datetime(fecha_maxima_historica)
     fechas_futuras = pd.date_range(start=fecha_max_dt + pd.Timedelta(days=1), periods=dias_a_pronosticar, freq='D')
     df_futuro_base = pd.DataFrame({'ds': fechas_futuras, 'y': np.nan})
+    
+    # Prepara el historial
     df_diario = df_historico.groupby('Fecha')['Cantidad'].sum().reset_index()
     df_diario = df_diario.rename(columns={'Fecha': 'ds', 'Cantidad': 'y'})
     df_diario['ds'] = pd.to_datetime(df_diario['ds'])
-    df_futuro_features = crear_features_avanzadas_para_prediccion(df_diario, df_futuro_base)
-    features = ['mes', 'dia_del_ano', 'dia_de_la_semana', 'ano', 'es_festivo', 'ventas_lag_1', 'ventas_lag_7', 'media_movil_7d', 'media_movil_30d']
+    
+    # Crea features para los días futuros
+    df_futuro_features = crear_features_avanzadas_para_prediccion(df_diario, df_futuro_base, df_clima)
+
+    # Lista de features que el modelo espera (debe ser IDÉNTICA a train_models.py)
+    features = [
+        'mes', 'dia_del_ano', 'dia_de_la_semana', 'ano', 'es_festivo',
+        'temporada_gripe', 'temporada_polen', 'Temperatura_Media',
+        'ventas_lag_1', 'ventas_lag_7',
+        'media_movil_7d', 'media_movil_30d'
+    ]
+    
     df_futuro_features = df_futuro_features.fillna(0)
-    X_pred = df_futuro_features[features]
+    X_pred = df_futuro_features[features] # Asegurarse de que el orden es el mismo
     
     prediccion_futura = model.predict(X_pred)
     prediccion_futura[prediccion_futura < 0] = 0
@@ -108,6 +154,7 @@ Responde a preguntas como: *"¿Qué pasaría si lanzo una campaña 2x1 y la dema
 
 df_total = cargar_datos()
 datos_modelos = cargar_modelos()
+df_clima = cargar_clima() # <-- ¡AÑADIR CARGA DE CLIMA!
 
 if df_total is not None and datos_modelos is not None:
     df_stock_actual = simular_stock_actual(df_total)
@@ -151,6 +198,7 @@ if df_total is not None and datos_modelos is not None:
             df_total[['Producto', 'Categoria']].drop_duplicates(),
             on='Producto', how='left'
         )
+        # Filtramos solo por las categorías que tienen modelos avanzados
         df_a_revisar = df_a_revisar[df_a_revisar['Categoria'].isin(['Alergia', 'Antigripal'])]
 
         if df_a_revisar.empty:
@@ -192,7 +240,8 @@ if df_total is not None and datos_modelos is not None:
                     (df_total['Producto'] == producto)
                 ]
                 
-                predicciones_diarias = generar_pronostico_avanzado(modelo, df_historico_producto, dias_a_pronosticar, fecha_max_hist)
+                # --- ¡CORRECCIÓN! Pasar 'df_clima' a la función ---
+                predicciones_diarias = generar_pronostico_avanzado(modelo, df_historico_producto, df_clima, dias_a_pronosticar, fecha_max_hist)
                 
                 ajuste_pct = 0
                 if categoria == 'Antigripal': ajuste_pct = ajuste_antigripal
@@ -251,11 +300,9 @@ if df_total is not None and datos_modelos is not None:
             
             st.header("Resultados de la Simulación")
             
-            # --- MEJORA 1: Explicar "Desde qué día partimos" ---
             fecha_inicio_sim = (pd.to_datetime(fecha_max_hist) + timedelta(days=1)).strftime('%d-%b-%Y')
             fecha_fin_sim = (pd.to_datetime(fecha_max_hist) + timedelta(days=dias_a_pronosticar)).strftime('%d-%b-%Y')
-            st.subheader(f"Horizonte: {fecha_inicio_sim} al {fecha_fin_sim}")
-            # --- FIN MEJORA 1 ---
+            st.subheader(f"Horizonte Simulado: {fecha_inicio_sim} al {fecha_fin_sim}")
             
             col1, col2, col3 = st.columns(3)
             col1.metric("Productos en Riesgo de Rotura", f"{productos_en_riesgo_count}")
@@ -268,7 +315,6 @@ if df_total is not None and datos_modelos is not None:
             
             st.divider()
 
-            # --- MEJORA 2: Título y explicación del gráfico ---
             st.subheader(f"Proyección de Agotamiento de Stock (Top 5 en Riesgo)")
             
             if not df_grafico_list:
@@ -284,13 +330,11 @@ if df_total is not None and datos_modelos is not None:
 
                 df_grafico_final = df_grafico_final[df_grafico_final['Producto_Farmacia'].isin(top_5_en_riesgo)]
                 
-                # Línea de Rotura de Stock (Y=0)
                 regla_cero = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(color='red', strokeDash=[5,5]).encode(y='y')
                 
-                # Gráfico de líneas
                 line_chart = alt.Chart(df_grafico_final).mark_line(point=True).encode(
-                    x=alt.X('Dia', title=f'Días desde {fecha_inicio_sim}'), # Eje X más claro
-                    y=alt.Y('Stock_Restante', title='Unidades de Stock (Útil)'), # Eje Y más claro
+                    x=alt.X('Dia', title=f'Días desde {fecha_inicio_sim}'), 
+                    y=alt.Y('Stock_Restante', title='Unidades de Stock (Útil)'),
                     color=alt.Color('Producto_Farmacia', title='Producto (Farmacia)'),
                     tooltip=['Producto_Farmacia', 'Dia', 'Stock_Restante']
                 ).interactive()
@@ -303,18 +347,14 @@ if df_total is not None and datos_modelos is not None:
                 * La **línea roja (en 0)** es la rotura de stock.
                 * Cuando una línea de producto la cruza, significa que ese día se agotan las existencias.
                 """)
-            # --- FIN MEJORA 2 ---
 
-            # --- MEJORA 3: Tabla Limpia + Expander de Detalles ---
             st.subheader("Resumen de Impacto por Producto")
             
             df_resultados = pd.DataFrame(resultados_tabla)
             
-            # Columnas clave para el resumen
             columnas_resumen = ["Farmacia", "Producto", "Días hasta Rotura", "Ventas en Riesgo (€)", "Ajuste Aplicado (%)"]
             df_resumen = df_resultados[columnas_resumen]
             
-            # Estilo para la tabla resumen
             def estilizar_riesgo(fila):
                 if fila["Días hasta Rotura"] != "OK":
                     return [f'background-color: #9B2B2B; color: white'] * len(fila) # Rojo oscuro
@@ -326,7 +366,6 @@ if df_total is not None and datos_modelos is not None:
             with st.expander("Ver cálculos y detalles completos"):
                 st.dataframe(df_resultados, use_container_width=True)
             
-            # El botón de descarga seguirá descargando la tabla detallada
             csv_data = convert_df_to_csv(df_resultados)
             st.download_button(
                 label="Descargar Simulación Detallada en CSV",

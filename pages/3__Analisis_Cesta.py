@@ -6,11 +6,8 @@ import warnings
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-# --- 1. Configuración de Página (¡CORREGIDA!) ---
-st.set_page_config(
-    page_title="Análisis de Cesta",
-    layout="wide"  # <-- ¡ESTA ES LA LÍNEA QUE FALTABA!
-)
+# --- 1. Configuración de Página ---
+st.set_page_config(page_title="Análisis de Cesta", layout="wide")
 
 # --- 2. Función de Descarga ---
 @st.cache_data
@@ -83,13 +80,15 @@ def correr_analisis_apriori(basket_one_hot, min_support):
     return rules
 
 # --- INTERFAZ DE STREAMLIT ---
-st.title("Análisis de Cesta de Compra (Market Basket)")
+st.title("Análisis de Cesta de Compra")
+
 st.info("""
 **¿Para qué sirve esto?**
 Esta sección utiliza un algoritmo de Machine Learning (Apriori) para analizar las transacciones (simuladas) y encontrar "reglas de asociación". 
 Responde a la pregunta: *"El cliente que compró el Producto A, ¿qué más es probable que compre en la misma transacción?"*
 """, icon="ℹ️")
 
+# --- MEJORA PROFESIONAL: Advertencia sobre los datos ---
 st.warning("""
 **Nota sobre la Calidad de los Datos:**
 Los resultados de esta simulación son limitados. El dataset original **no contiene IDs de transacción** (cestas de compra reales). 
@@ -111,11 +110,13 @@ if df_total is not None:
     st.sidebar.divider()
     st.sidebar.header("Parámetros del Modelo (IA)")
     
+    # --- MEJORA DE UX: Arreglo del Slider ---
+    # Cambiamos el valor por defecto 'value' de 0.01 a 0.003
     min_support = st.sidebar.slider(
         "Soporte Mínimo (Frecuencia):", 
         min_value=0.001, 
         max_value=0.1, 
-        value=0.003,
+        value=0.003,  # <-- ¡VALOR POR DEFECTO CORREGIDO!
         step=0.001, 
         format="%.3f",
         help="Frecuencia mínima de un grupo de productos para ser analizado. Un valor más bajo encontrará más reglas."
@@ -154,6 +155,7 @@ if df_total is not None:
             df_mostrar = reglas_display[['Si el cliente compra...', '...también compra', 'Confianza (Probabilidad)', 'Lift (Poder Predictivo)']]
             st.dataframe(df_mostrar, use_container_width=True)
 
+            # --- Botón de Descarga ---
             csv_data = convert_df_to_csv(df_mostrar)
             st.download_button(
                 label="Descargar Reglas de Asociación en CSV",
