@@ -3,18 +3,19 @@ import streamlit as st
 import altair as alt
 import numpy as np
 
-# --- MEJORA VISUAL: Configuración de Pestaña ---
-st.set_page_config(page_title="Rentabilidad", page_icon="💰", layout="wide")
+# --- 1. Configuración de Página (con layout="wide") ---
+st.set_page_config(page_title="Rentabilidad", layout="wide")
 
-# --- MEJORA FUNCIONAL: Función de Descarga ---
+# --- 2. Función de Descarga ---
 @st.cache_data
 def convert_df_to_csv(df):
     """Convierte un DataFrame a CSV en memoria para la descarga."""
-    return df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig') # UTF-8 con BOM para Excel
+    return df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
 
-# --- FUNCIONES DE DATOS (CON CACHÉ) ---
+# --- Funciones de Datos (CON CACHÉ) ---
 @st.cache_data
 def cargar_datos(file_name='ventas_farmacia_fake.csv'):
+    """Carga los datos base desde el CSV."""
     try:
         df = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
         df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
@@ -25,23 +26,38 @@ def cargar_datos(file_name='ventas_farmacia_fake.csv'):
 
 @st.cache_data
 def simular_y_calcular_rentabilidad(df_in):
+    """
+    Simula el 'Coste_Unitario_€' (basado en el precio) y calcula el margen.
+    """
     df = df_in.copy()
+    
+    # Simulación de Costes (basada en el precio de venta para consistencia)
     productos = df[['Producto', 'Precio_Unitario_€']].drop_duplicates()
-    np.random.seed(42)
+    np.random.seed(42) # Semilla para que los costes sean siempre los mismos
     ratios_coste = np.random.uniform(0.4, 0.8, size=len(productos))
     productos['Ratio_Coste'] = ratios_coste
     productos['Coste_Unitario_€'] = productos['Precio_Unitario_€'] * productos['Ratio_Coste']
+    
     df = df.merge(productos[['Producto', 'Coste_Unitario_€']], on='Producto', how='left')
+    
+    # --- Cálculo de Rentabilidad ---
     df['Margen_Unitario_€'] = df['Precio_Unitario_€'] - df['Coste_Unitario_€']
     df['Margen_Neto_€'] = df['Margen_Unitario_€'] * df['Cantidad']
+    
     return df
 
 # --- INTERFAZ DE STREAMLIT ---
-st.title("💰 Análisis de Rentabilidad")
-st.info("💡 **¿Para qué sirve esto?** Esta página va más allá de las ventas. Identifica qué productos y farmacias generan el **mayor beneficio (margen)**, permitiéndote enfocar tus esfuerzos en lo que realmente da dinero.", icon="💡")
+st.title("Análisis de Rentabilidad")
+
+st.info("""
+**¿Para qué sirve esto?**
+Esta página va más allá de las ventas brutas. Analiza el **beneficio (margen)** de cada producto y farmacia.
+Permite identificar qué productos son "vacas lecheras" (alto volumen, bajo margen) y cuáles son "joyas ocultas" (bajo volumen, alto margen).
+""") # Usamos el 'st.info' neutro, sin icono
 
 df_total = cargar_datos()
 if df_total is not None:
+    # --- MEJORA: Eliminamos el st.info molesto. La carga es silenciosa. ---
     df_rentabilidad = simular_y_calcular_rentabilidad(df_total)
 
     # --- FILTROS EN LA BARRA LATERAL ---
@@ -79,52 +95,127 @@ if df_total is not None:
     col3.metric("Margen Medio (%)", f"{margen_medio_pct:,.1f} %")
     st.divider()
 
-    # --- GRÁFICOS COMPARATIVOS ---
-    st.header("Análisis de Productos")
+    # --- MEJORA: Organización por Pestañas ---
+    tab1, tab2 = st.tabs(["Análisis de Producto", "Evolución Temporal de Rentabilidad"])
     
     if df_filtrado.empty:
         st.warning("No se encontraron datos con los filtros seleccionados.")
     else:
-        df_productos_agg = df_filtrado.groupby(['Producto', 'Categoria']).agg(
-            Ventas_Totales=('Total_Venta_€', 'sum'),
-            Rentabilidad_Neta=('Margen_Neto_€', 'sum')
-        ).reset_index()
-
-        col_ventas, col_rentabilidad = st.columns(2)
-        with col_ventas:
-            st.subheader("Top 10 Productos por Ventas")
-            chart_ventas = alt.Chart(df_productos_agg).mark_bar().encode(
-                x=alt.X('Ventas_Totales:Q', title="Ventas Totales (€)"),
-                y=alt.Y('Producto:N', sort='-x'),
-                tooltip=['Producto', 'Categoria', 'Ventas_Totales', 'Rentabilidad_Neta']
-            ).transform_window(
-                rank='rank(Ventas_Totales)', sort=[alt.SortField('Ventas_Totales', order='descending')]
-            ).transform_filter(alt.datum.rank <= 10).interactive()
-            st.altair_chart(chart_ventas, use_container_width=True)
-
-        with col_rentabilidad:
-            st.subheader("Top 10 Productos por Rentabilidad")
-            chart_rentabilidad = alt.Chart(df_productos_agg).mark_bar(color='#00BFFF').encode( # Color primario del tema
-                x=alt.X('Rentabilidad_Neta:Q', title="Rentabilidad Neta (€)"),
-                y=alt.Y('Producto:N', sort='-x'),
-                tooltip=['Producto', 'Categoria', 'Ventas_Totales', 'Rentabilidad_Neta']
-            ).transform_window(
-                rank='rank(Rentabilidad_Neta)', sort=[alt.SortField('Rentabilidad_Neta', order='descending')]
-            ).transform_filter(alt.datum.rank <= 10).interactive()
-            st.altair_chart(chart_rentabilidad, use_container_width=True)
+        with tab1:
+            st.header("Análisis de Portfolio de Productos")
             
-        st.markdown("---")
-        st.subheader("Datos Detallados de Productos")
-        st.dataframe(df_productos_agg.sort_values(by="Ventas_Totales", ascending=False), use_container_width=True)
-        
-        # --- MEJORA: BOTÓN DE DESCARGA ---
-        csv_data = convert_df_to_csv(df_productos_agg)
-        st.download_button(
-            label="Descargar Datos de Productos en CSV",
-            data=csv_data,
-            file_name=f"reporte_rentabilidad_productos.csv",
-            mime='text/csv',
-            use_container_width=True
-        )
+            # Agregamos los datos por producto
+            df_productos_agg = df_filtrado.groupby(['Producto', 'Categoria']).agg(
+                Ventas_Totales_Euros=('Total_Venta_€', 'sum'),
+                Rentabilidad_Neta_Euros=('Margen_Neto_€', 'sum')
+            ).reset_index()
+            
+            # Calcular Margen %
+            df_productos_agg['Margen_Pct'] = (df_productos_agg['Rentabilidad_Neta_Euros'] / df_productos_agg['Ventas_Totales_Euros']) * 100
+            df_productos_agg = df_productos_agg.fillna(0)
+
+            # --- MEJORA: Gráfico de Matriz (Scatter Plot) ---
+            st.subheader("Matriz de Posicionamiento (Ventas vs. Rentabilidad)")
+            
+            scatter_plot = alt.Chart(df_productos_agg).mark_circle(size=100).encode(
+                x=alt.X('Ventas_Totales_Euros', title='Ventas Totales (€)'),
+                y=alt.Y('Rentabilidad_Neta_Euros', title='Rentabilidad Neta (€)'),
+                color=alt.Color('Categoria', title='Categoría'),
+                size=alt.Size('Margen_Pct', title='Margen (%)', legend=alt.Legend(format='.0f')),
+                tooltip=['Producto', 'Categoria', 'Ventas_Totales_Euros', 'Rentabilidad_Neta_Euros', alt.Tooltip('Margen_Pct', format='.1f')]
+            ).properties(
+                title="Posicionamiento de Productos"
+            ).interactive()
+            
+            st.altair_chart(scatter_plot, use_container_width=True)
+            st.info("""
+            **Cómo leer este gráfico:**
+            - **Arriba a la derecha (Estrellas):** Productos con altas ventas y alta rentabilidad. (Ej. Paracetamol)
+            - **Abajo a la derecha (Vacas Lecheras):** Alto volumen de ventas, pero bajo margen de beneficio.
+            - **Arriba a la izquierda (Joyas Ocultas):** Bajas ventas, pero cada venta es muy rentable.
+            - **Abajo a la izquierda (Perros):** Bajas ventas y baja rentabilidad.
+            """)
+            
+            st.divider()
+
+            # --- Gráficos Top 10 (como antes) ---
+            col_ventas, col_rentabilidad = st.columns(2)
+            with col_ventas:
+                st.subheader("Top 10 Productos por Ventas")
+                chart_ventas = alt.Chart(df_productos_agg).mark_bar().encode(
+                    x=alt.X('Ventas_Totales_Euros:Q', title="Ventas Totales (€)"),
+                    y=alt.Y('Producto:N', sort='-x'),
+                    color=alt.Color('Categoria', title='Categoría'),
+                    tooltip=['Producto', 'Categoria', 'Ventas_Totales_Euros', 'Rentabilidad_Neta_Euros']
+                ).transform_window(
+                    rank='rank(Ventas_Totales_Euros)', sort=[alt.SortField('Ventas_Totales_Euros', order='descending')]
+                ).transform_filter(alt.datum.rank <= 10).interactive()
+                st.altair_chart(chart_ventas, use_container_width=True)
+
+            with col_rentabilidad:
+                st.subheader("Top 10 Productos por Rentabilidad")
+                chart_rentabilidad = alt.Chart(df_productos_agg).mark_bar(color='#4682B4').encode( 
+                    x=alt.X('Rentabilidad_Neta_Euros:Q', title="Rentabilidad Neta (€)"),
+                    y=alt.Y('Producto:N', sort='-x'),
+                    color=alt.Color('Categoria', title='Categoría'),
+                    tooltip=['Producto', 'Categoria', 'Ventas_Totales_Euros', 'Rentabilidad_Neta_Euros']
+                ).transform_window(
+                    rank='rank(Rentabilidad_Neta_Euros)', sort=[alt.SortField('Rentabilidad_Neta_Euros', order='descending')]
+                ).transform_filter(alt.datum.rank <= 10).interactive()
+                st.altair_chart(chart_rentabilidad, use_container_width=True)
+                
+            st.markdown("---")
+            st.subheader("Datos Detallados de Productos")
+            st.dataframe(df_productos_agg.sort_values(by="Ventas_Totales_Euros", ascending=False), use_container_width=True)
+            
+            # --- Botón de Descarga ---
+            csv_data = convert_df_to_csv(df_productos_agg)
+            st.download_button(
+                label="Descargar Datos de Rentabilidad de Productos en CSV",
+                data=csv_data,
+                file_name=f"reporte_rentabilidad_productos.csv",
+                mime='text/csv',
+                use_container_width=True
+            )
+
+        with tab2:
+            st.header("Evolución Temporal de la Rentabilidad")
+            
+            # Preparamos los datos temporales
+            df_filtrado['Fecha'] = pd.to_datetime(df_filtrado['Fecha'])
+            df_rent_tiempo = df_filtrado.set_index('Fecha').groupby('Categoria').resample('M')['Margen_Neto_€'].sum().reset_index()
+            df_rent_tiempo['Fecha'] = df_rent_tiempo['Fecha'] + pd.offsets.MonthEnd(0) # Asegurar fin de mes
+
+            st.subheader("Rentabilidad Neta Mensual por Categoría")
+            
+            area_chart = alt.Chart(df_rent_tiempo).mark_area().encode(
+                x=alt.X('Fecha:T', title='Mes'),
+                y=alt.Y('Margen_Neto_€:Q', title='Rentabilidad Neta (€)', stack='zero'),
+                color=alt.Color('Categoria', title='Categoría'),
+                tooltip=['Fecha', 'Categoria', alt.Tooltip('Margen_Neto_€', title='Rentabilidad Neta', format=',.0f')]
+            ).properties(
+                title="Evolución de la Rentabilidad Mensual"
+            ).interactive()
+            
+            st.altair_chart(area_chart, use_container_width=True)
+            
+            st.info("""
+            Este gráfico muestra qué categorías generan más beneficio y en qué época del año. 
+            (Ej. Se puede observar el pico de rentabilidad de 'Antigripal' en los meses de invierno).
+            """)
+            
+            st.markdown("---")
+            st.subheader("Datos Detallados de Rentabilidad Temporal")
+            st.dataframe(df_rent_tiempo.sort_values(by="Fecha"), use_container_width=True)
+            
+            # --- Botón de Descarga ---
+            csv_data_tiempo = convert_df_to_csv(df_rent_tiempo)
+            st.download_button(
+                label="Descargar Datos de Rentabilidad Temporal en CSV",
+                data=csv_data_tiempo,
+                file_name=f"reporte_rentabilidad_temporal.csv",
+                mime='text/csv',
+                use_container_width=True
+            )
 else:
     st.error("Error al cargar los datos.")
