@@ -1,7 +1,7 @@
 pandas
 xgboost
-altair
-streamlit
+altair==5.3.0
+streamlit==1.36.0
 streamlit-folium
 scikit-learn
 mlxtend
