@@ -2,7 +2,7 @@
 
 Un dashboard de Business Intelligence y Machine Learning de nivel profesional construido con Streamlit y Python, diseñado como proyecto de portfolio.
 
-**[Ver la App en Vivo](https://app-farmacia-ia-portfolio.streamlit.app/)** _<-- ¡Reemplaza este enlace cuando lo despliegues!_
+**[Ver la App en Vivo](https://app-farmacia-ia-portfolio.streamlit.app/)** 
 
 ---
 
