@@ -19,15 +19,9 @@ def cargar_datos(file_name='ventas_farmacia_fake.csv'):
         df = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
         df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
         return df
-    except FileNotFoundError: return None
-
-@st.cache_resource
-def cargar_modelos(file_name='modelos_farmacia.joblib'):
-    try:
-        datos = joblib.load(file_name)
-        st.sidebar.success(f"Modelos Premium activos (v.{datos['fecha_entrenamiento'].strftime('%d%m')})")
-        return datos
-    except: return None
+    except FileNotFoundError:
+        st.error(f"Error: No se encuentra {file_name}")
+        return None
 
 @st.cache_data
 def cargar_clima(file_name='clima_madrid.csv'):
@@ -37,13 +31,23 @@ def cargar_clima(file_name='clima_madrid.csv'):
         return df
     except: return None
 
+@st.cache_resource
+def cargar_modelos(file_name='modelos_farmacia.joblib'):
+    try:
+        datos_modelos = joblib.load(file_name)
+        st.sidebar.success(f"Modelos Premium cargados (v.{datos_modelos['fecha_entrenamiento'].strftime('%d%m')})")
+        return datos_modelos
+    except FileNotFoundError:
+        st.error(f"Error: No se encuentra {file_name}")
+        return None
+
 # --- LÓGICA DE PREDICCIÓN PREMIUM (RECURSIVA 16 FEATURES) ---
-# Esta función crea EXACTAMENTE las columnas que pide el error
 
 def crear_features_un_paso(historia_y, fecha_obj, df_clima):
+    """Genera las 16 features premium para un solo día futuro."""
     row = pd.DataFrame({'ds': [pd.to_datetime(fecha_obj)]})
     
-    # 1. Ciclos Temporales (Seno/Coseno)
+    # 1. Ciclos Temporales
     mes = fecha_obj.month; dia_sem = fecha_obj.weekday()
     row['mes_sin'] = np.sin(2 * np.pi * mes / 12)
     row['mes_cos'] = np.cos(2 * np.pi * mes / 12)
@@ -63,7 +67,7 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
         if not match.empty: t_media = match.iloc[0]['Temperatura_Media']
     row['Temperatura_Media'] = t_media
     
-    # 4. Lags y Rolling (Complejos)
+    # 4. Lags y Rolling
     vals = historia_y
     row['lag_1'] = vals[-1] if len(vals)>=1 else 0
     row['lag_2'] = vals[-2] if len(vals)>=2 else 0
@@ -78,7 +82,7 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     rm7_prev = pd.Series(vals).rolling(7).mean().iloc[-8] if len(vals)>=8 else rm7
     row['tendencia_semanal'] = rm7 - rm7_prev
     
-    # Orden EXACTO del modelo Premium
+    # Orden EXACTO
     cols = ['mes_sin', 'mes_cos', 'dia_semana_sin', 'dia_semana_cos', 
             'es_festivo', 'temp_gripe', 'temp_alergia', 'Temperatura_Media',
             'lag_1', 'lag_2', 'lag_7', 'lag_14',
@@ -86,9 +90,7 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     return row[cols]
 
 def predecir_recursivo(model, df_hist_prod, df_clima, dias_futuros):
-    # Última fecha conocida
     ult_fecha = df_hist_prod['Fecha'].max()
-    # Historial ordenado
     historia = list(df_hist_prod.sort_values('Fecha')['Cantidad'].values)
     
     predicciones = []
@@ -132,6 +134,24 @@ if df_total is not None:
     with tab2:
         st.subheader("Tendencias")
         st.altair_chart(alt.Chart(df_fil).mark_line().encode(x='yearmonth(Fecha)', y='sum(Cantidad)', color='Categoria').interactive(), use_container_width=True)
+        
+        st.divider()
+        st.subheader("Descomposición de Serie Temporal")
+        prods = sorted(df_fil['Producto'].unique())
+        if prods:
+            p_sel = st.selectbox("Producto:", prods)
+            df_p = df_fil[df_fil['Producto'] == p_sel].groupby('Fecha')['Cantidad'].sum()
+            df_p.index = pd.to_datetime(df_p.index)
+            df_p = df_p.asfreq('D').fillna(0)
+            
+            if len(df_p) > 365*2:
+                res = seasonal_decompose(df_p, model='additive', period=365)
+                st.line_chart(res.trend, height=200)
+                st.caption("Tendencia")
+                st.line_chart(res.seasonal.iloc[:365], height=200)
+                st.caption("Estacionalidad (1 año)")
+            else:
+                st.warning("Datos insuficientes para descomposición.")
 
     with tab3:
         st.header("Motor de IA Premium")
@@ -146,34 +166,35 @@ if df_total is not None:
                 model_info = datos_modelos['modelos'].get(key)
                 
                 if model_info:
-                    df_hist = df_total[(df_total['Producto']==prod) & (df_total['Farmacia_ID']==farm_ref)]
-                    df_fut = predecir_recursivo(model_info['model'], df_hist, df_clima, dias)
-                    
-                    st.success("Pronóstico Generado")
-                    
-                    # Métricas
-                    c1, c2 = st.columns([1, 2])
-                    c1.metric("RMSE (Precisión)", f"{model_info['rmse']:.2f}", help="Menor es mejor")
-                    
-                    # Gráfico Importancia
-                    if 'importance' in model_info:
-                        c2.altair_chart(alt.Chart(model_info['importance'].head(7)).mark_bar().encode(
-                            x='Importancia', y=alt.Y('Impulsor', sort='-x'), tooltip=['Impulsor', 'Importancia']
-                        ).properties(title="Factores de Decisión"), use_container_width=True)
+                    with st.spinner("Calculando predicción día a día..."):
+                        df_hist = df_total[(df_total['Producto']==prod) & (df_total['Farmacia_ID']==farm_ref)]
+                        
+                        # Usamos la función correcta
+                        df_fut = predecir_recursivo(model_info['model'], df_hist, df_clima, dias)
+                        
+                        st.success("Pronóstico Generado")
+                        
+                        c1, c2 = st.columns([1, 2])
+                        c1.metric("RMSE (Precisión)", f"{model_info['rmse']:.2f}", help="Menor es mejor")
+                        
+                        if 'importance' in model_info:
+                            c2.altair_chart(alt.Chart(model_info['importance'].head(7)).mark_bar().encode(
+                                x='Importancia', y=alt.Y('Impulsor', sort='-x'), tooltip=['Impulsor', 'Importancia']
+                            ).properties(title="Factores de Decisión"), use_container_width=True)
 
-                    # Gráfico Línea
-                    df_hist_plot = df_hist[['Fecha', 'Cantidad']].rename(columns={'Fecha':'ds','Cantidad':'y'})
-                    df_hist_plot['Tipo'] = 'Real'
-                    df_fut['y'] = df_fut['Prediccion']; df_fut['Tipo'] = 'Predicción'
-                    
-                    min_date = df_fut['ds'].min() - timedelta(days=180)
-                    df_plot = pd.concat([df_hist_plot[pd.to_datetime(df_hist_plot['ds'])>min_date], df_fut])
-                    
-                    st.altair_chart(alt.Chart(df_plot).mark_line().encode(
-                        x='ds', y='y', color='Tipo', strokeDash='Tipo'
-                    ).interactive(), use_container_width=True)
-                    
-                    st.dataframe(df_fut[['ds', 'Prediccion']].set_index('ds'), use_container_width=True)
-
-                else: st.warning("Sin modelo para esta combinación.")
-            else: st.error("Modelos no cargados.")
+                        df_hist_plot = df_hist[['Fecha', 'Cantidad']].rename(columns={'Fecha':'ds','Cantidad':'y'})
+                        df_hist_plot['Tipo'] = 'Real'
+                        df_fut['y'] = df_fut['Prediccion']; df_fut['Tipo'] = 'Predicción'
+                        
+                        min_date = df_fut['ds'].min() - timedelta(days=180)
+                        df_plot = pd.concat([df_hist_plot[pd.to_datetime(df_hist_plot['ds'])>min_date], df_fut])
+                        
+                        st.altair_chart(alt.Chart(df_plot).mark_line().encode(
+                            x='ds', y='y', color='Tipo', strokeDash='Tipo'
+                        ).interactive(), use_container_width=True)
+                        
+                        st.dataframe(df_fut[['ds', 'Prediccion']].set_index('ds'), use_container_width=True)
+                else:
+                    st.warning("Sin modelo para esta combinación.")
+            else:
+                st.error("Modelos no cargados.")
