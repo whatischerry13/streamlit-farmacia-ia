@@ -2,36 +2,41 @@ import openmeteo_requests
 import requests_cache
 import pandas as pd
 from retry_requests import retry
+from datetime import datetime, timedelta
 
 def descargar_y_guardar_clima():
     """
-    Se conecta a la API de Open-Meteo para descargar datos históricos
-    de temperatura para Madrid (2022-2024) y los guarda en un CSV.
+    Descarga datos climáticos de Madrid desde 2022 hasta AYER.
     """
-    print("Iniciando descarga de datos climáticos históricos (Solo Temperatura)...")
+    print("Iniciando descarga de datos climáticos actualizados...")
     
-    # --- Configuración de la API ---
+    # --- 1. Calcular Fechas Dinámicas ---
+    fecha_inicio = "2022-01-01"
+    # La API de archivo suele tener un retraso de 2-3 días. Pedimos hasta hace 2 días.
+    fecha_fin = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
+    
+    print(f"Solicitando datos desde {fecha_inicio} hasta {fecha_fin}...")
+
+    # --- 2. Configuración API ---
     cache_session = requests_cache.CachedSession('.cache', expire_after=-1)
     retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
     openmeteo = openmeteo_requests.Client(session=retry_session)
 
-    # Coordenadas de Madrid y rango de fechas de nuestros datos
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
         "latitude": 40.4165,
         "longitude": -3.7026,
-        "start_date": "2022-01-01",
-        "end_date": "2024-12-31",
-        "daily": ["temperature_2m_mean"], # <-- CORREGIDO: Solo pedimos temperatura
+        "start_date": fecha_inicio,
+        "end_date": fecha_fin,
+        "daily": ["temperature_2m_mean"],
         "timezone": "Europe/Berlin"
     }
     
     try:
         responses = openmeteo.weather_api(url, params=params)
         response = responses[0]
-        print(f"Datos recibidos de Open-Meteo para: {response.Latitude()}°N {response.Longitude()}°E")
-
-        # --- Procesar Datos Diarios (Temperatura) ---
+        
+        # --- 3. Procesar Datos ---
         daily = response.Daily()
         daily_temperature_2m_mean = daily.Variables(0).ValuesAsNumpy()
 
@@ -44,21 +49,19 @@ def descargar_y_guardar_clima():
         daily_data["Temperatura_Media"] = daily_temperature_2m_mean
         df_daily = pd.DataFrame(data=daily_data)
         
-        # --- Limpiar y Guardar ---
+        # Limpieza y formato
         df_daily['Fecha'] = pd.to_datetime(df_daily['date'].dt.date)
         df_clima_final = df_daily[['Fecha', 'Temperatura_Media']]
-        df_clima_final['Fecha'] = pd.to_datetime(df_clima_final['Fecha']).dt.date
         
-        # Guardar en CSV
+        # --- 4. Guardar ---
         output_file = "clima_madrid.csv"
         df_clima_final.to_csv(output_file, index=False, sep=';', decimal=',')
         
-        print(f"¡Éxito! Datos climáticos (Temperatura) guardados en '{output_file}'.")
-        print(df_clima_final.head())
+        print(f"¡ÉXITO! Datos climáticos actualizados guardados en '{output_file}'.")
+        print(f"Rango: {df_clima_final['Fecha'].min().date()} a {df_clima_final['Fecha'].max().date()}")
 
     except Exception as e:
-        print(f"Error al descargar o procesar los datos climáticos: {e}")
-        print("Asegúrate de tener conexión a internet y las librerías 'openmeteo-requests', 'requests_cache' y 'retry_requests' instaladas.")
+        print(f"Error: {e}")
 
 if __name__ == "__main__":
     descargar_y_guardar_clima()

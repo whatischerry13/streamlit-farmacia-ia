@@ -4,13 +4,13 @@ import xgboost as xgb
 import streamlit as st
 import warnings
 import joblib
-from datetime import datetime, timedelta
+import holidays
 import altair as alt
-import holidays # <-- ¡Importación necesaria!
+from datetime import datetime, timedelta
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-# --- 1. Configuración de Página (con layout="wide") ---
+# --- 1. Configuración de Página
 st.set_page_config(page_title="Simulador de Escenarios", layout="wide")
 
 # --- 2. Función de Descarga ---
@@ -28,7 +28,17 @@ def cargar_datos(file_name='ventas_farmacia_fake.csv'):
         df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
         return df
     except FileNotFoundError:
-        st.error(f"¡ERROR! No se encontró el archivo '{file_name}'.")
+        st.error(f"Error: No se encontró el archivo '{file_name}'.")
+        return None
+
+@st.cache_data
+def cargar_clima(file_name='clima_madrid.csv'):
+    """Carga los datos climáticos."""
+    try:
+        df = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
+        df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
+        return df
+    except:
         return None
 
 @st.cache_data
@@ -49,128 +59,114 @@ def cargar_modelos(file_name='modelos_farmacia.joblib'):
         datos_modelos = joblib.load(file_name)
         return datos_modelos
     except FileNotFoundError:
-        st.error(f"¡ERROR! No se encontró el archivo de modelos '{file_name}'.")
+        st.error(f"Error: No se encontró el archivo de modelos '{file_name}'.")
         st.info("Por favor, ejecuta el script 'train_models.py' en tu terminal.")
         return None
 
-# --- ¡NUEVA FUNCIÓN! Cargar datos climáticos ---
-@st.cache_data
-def cargar_clima(file_name='clima_madrid.csv'):
-    """Carga los datos climáticos descargados."""
-    try:
-        df_clima = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
-        df_clima['Fecha'] = pd.to_datetime(df_clima['Fecha']).dt.date
-        return df_clima
-    except FileNotFoundError:
-        st.warning(f"Advertencia: No se encontró '{file_name}'. El pronóstico funcionará sin datos climáticos.")
-        return None
+# --- LÓGICA DE PREDICCIÓN 
 
-# --- Funciones de Predicción Avanzada ---
 def simular_festivos(df_fechas):
-    """
-    Usa la librería 'holidays' para crear la feature 'es_festivo'.
-    Asume que df_fechas tiene una columna 'ds'.
-    """
-    df = df_fechas.copy()
-    festivos_espana = holidays.Spain(years=[2022, 2023, 2024, 2025]) # +1 año para predicción
-    df['es_festivo'] = df['ds'].isin(festivos_espana).astype(int)
-    return df
+    """Simula días festivos para los datos de predicción."""
+    # Esta función auxiliar ya no es estrictamente necesaria dentro de 'crear_features_un_paso'
+    # porque calculamos los festivos directamente allí, pero la dejo por compatibilidad.
+    return df_fechas
 
-def crear_features_avanzadas_para_prediccion(df_diario, df_futuro, df_clima):
-    """
-    Crea las features (lag, rolling, clima, festivos) para el set de predicción.
-    """
-    df_diario_copy = df_diario.set_index('ds')
-    df_futuro_copy = df_futuro.set_index('ds')
-    df = pd.concat([df_diario_copy, df_futuro_copy])
-    df = df.reset_index() # 'ds' es ahora una columna
-
-    # 1. Características de tiempo
-    df['mes'] = df['ds'].dt.month
-    df['dia_del_ano'] = df['ds'].dt.dayofyear
-    df['dia_de_la_semana'] = df['ds'].dt.dayofweek
-    df['ano'] = df['ds'].dt.year
+# 2. Generador de Features paso a paso (Coincide con el modelo Premium)
+def crear_features_un_paso(historia_y, fecha_obj, df_clima):
+    """Genera las 16 features premium para un solo día futuro."""
+    row = pd.DataFrame({'ds': [pd.to_datetime(fecha_obj)]})
     
-    # 2. Características Externas (Reales y Simuladas)
-    df = simular_festivos(df) # <-- Pasa el df con la columna 'ds'
-    df['temporada_gripe'] = df['mes'].isin([10, 11, 12, 1, 2, 3]).astype(int)
-    df['temporada_polen'] = df['mes'].isin([3, 4, 5, 6]).astype(int)
+    # A. Ciclos Temporales
+    mes = fecha_obj.month
+    dia_sem = fecha_obj.weekday()
+    row['mes_sin'] = np.sin(2 * np.pi * mes / 12)
+    row['mes_cos'] = np.cos(2 * np.pi * mes / 12)
+    row['dia_semana_sin'] = np.sin(2 * np.pi * dia_sem / 7)
+    row['dia_semana_cos'] = np.cos(2 * np.pi * dia_sem / 7)
     
+    # B. Festivos y Temporadas
+    es_holidays = holidays.Spain(years=[fecha_obj.year])
+    row['es_festivo'] = int(fecha_obj in es_holidays)
+    row['temp_gripe'] = int(mes in [10, 11, 12, 1, 2])
+    row['temp_alergia'] = int(mes in [3, 4, 5, 6])
+    
+    # C. Clima
+    t_media = 15.0
     if df_clima is not None:
-        df_clima_copy = df_clima.copy()
-        df_clima_copy['ds'] = pd.to_datetime(df_clima_copy['Fecha'])
-        df = df.merge(df_clima_copy[['ds', 'Temperatura_Media']], on='ds', how='left')
-        df['Temperatura_Media'] = df['Temperatura_Media'].fillna(method='ffill').fillna(method='bfill')
-    else:
-        df['Temperatura_Media'] = 15.0 # Valor neutro
+        match = df_clima[df_clima['Fecha'] == fecha_obj]
+        if not match.empty: t_media = match.iloc[0]['Temperatura_Media']
+    row['Temperatura_Media'] = t_media
     
-    # 3. Características de Retraso (Lag) y Móviles (Rolling)
-    df = df.set_index('ds') # Volver a poner 'ds' como índice para shift/rolling
-    df['ventas_lag_1'] = df['y'].shift(1)
-    df['ventas_lag_7'] = df['y'].shift(7)
-    df['media_movil_7d'] = df['y'].shift(1).rolling(window=7, min_periods=1).mean()
-    df['media_movil_30d'] = df['y'].shift(1).rolling(window=30, min_periods=1).mean()
+    # D. Lags y Rolling (Usando el historial acumulado)
+    vals = historia_y
+    row['lag_1'] = vals[-1] if len(vals) >= 1 else 0
+    row['lag_2'] = vals[-2] if len(vals) >= 2 else 0
+    row['lag_7'] = vals[-7] if len(vals) >= 7 else 0
+    row['lag_14'] = vals[-14] if len(vals) >= 14 else 0
     
-    df = df.bfill().reset_index() # Devolver 'ds' como columna
+    row['roll_mean_7'] = pd.Series(vals).rolling(7).mean().iloc[-1] if len(vals)>=7 else 0
+    row['roll_mean_28'] = pd.Series(vals).rolling(28).mean().iloc[-1] if len(vals)>=28 else 0
+    row['roll_std_7'] = pd.Series(vals).rolling(7).std().iloc[-1] if len(vals)>=7 else 0
     
-    return df.iloc[-len(df_futuro):]
+    # Tendencia
+    rm7_prev = pd.Series(vals).rolling(7).mean().iloc[-8] if len(vals)>=8 else row['roll_mean_7'].values[0]
+    row['tendencia_semanal'] = row['roll_mean_7'] - rm7_prev
+    
+    # Orden exacto de columnas que espera el modelo Premium (16 features)
+    cols = ['mes_sin', 'mes_cos', 'dia_semana_sin', 'dia_semana_cos', 
+            'es_festivo', 'temp_gripe', 'temp_alergia', 'Temperatura_Media',
+            'lag_1', 'lag_2', 'lag_7', 'lag_14',
+            'roll_mean_7', 'roll_mean_28', 'roll_std_7', 'tendencia_semanal']
+    return row[cols]
 
-def generar_pronostico_avanzado(model, df_historico, df_clima, dias_a_pronosticar, fecha_maxima_historica):
-    """Genera la predicción de demanda usando el modelo AVANZADO."""
-    fecha_max_dt = pd.to_datetime(fecha_maxima_historica)
-    fechas_futuras = pd.date_range(start=fecha_max_dt + pd.Timedelta(days=1), periods=dias_a_pronosticar, freq='D')
-    df_futuro_base = pd.DataFrame({'ds': fechas_futuras, 'y': np.nan})
+def predecir_recursivo(model, df_hist_prod, df_clima, dias_futuros, fecha_max):
+    """Bucle que predice día a día alimentándose a sí mismo."""
+    # Extraemos solo la serie de cantidad ordenada
+    historia = list(df_hist_prod.sort_values('Fecha')['Cantidad'].values)
+    predicciones = []
     
-    # Prepara el historial
-    df_diario = df_historico.groupby('Fecha')['Cantidad'].sum().reset_index()
-    df_diario = df_diario.rename(columns={'Fecha': 'ds', 'Cantidad': 'y'})
-    df_diario['ds'] = pd.to_datetime(df_diario['ds'])
-    
-    # Crea features para los días futuros
-    df_futuro_features = crear_features_avanzadas_para_prediccion(df_diario, df_futuro_base, df_clima)
-
-    # Lista de features que el modelo espera (debe ser IDÉNTICA a train_models.py)
-    features = [
-        'mes', 'dia_del_ano', 'dia_de_la_semana', 'ano', 'es_festivo',
-        'temporada_gripe', 'temporada_polen', 'Temperatura_Media',
-        'ventas_lag_1', 'ventas_lag_7',
-        'media_movil_7d', 'media_movil_30d'
-    ]
-    
-    df_futuro_features = df_futuro_features.fillna(0)
-    X_pred = df_futuro_features[features] # Asegurarse de que el orden es el mismo
-    
-    prediccion_futura = model.predict(X_pred)
-    prediccion_futura[prediccion_futura < 0] = 0
-    return prediccion_futura.round(0).astype(int) 
+    for i in range(dias_futuros):
+        fecha_futura = fecha_max + timedelta(days=i+1)
+        
+        # Crear features para mañana usando la historia (que incluye predicciones pasadas)
+        X_test = crear_features_un_paso(historia, fecha_futura, df_clima)
+        
+        # Predecir
+        y_pred = max(0, model.predict(X_test)[0])
+        
+        # Guardar y actualizar historia para el siguiente ciclo del bucle
+        predicciones.append(y_pred)
+        historia.append(y_pred)
+        
+    return np.array(predicciones)
 
 # --- INTERFAZ DE STREAMLIT ---
 st.title("Simulador de Escenarios 'What-If'")
 st.info("""
-**¿Para qué sirve esto?**
-Esta es una herramienta de **análisis prescriptivo**. Permite simular el impacto de eventos de negocio (como campañas de marketing) sobre el inventario *antes* de que ocurran. 
-Responde a preguntas como: *"¿Qué pasaría si lanzo una campaña 2x1 y la demanda de antigripales sube un 50%? ¿Qué farmacias se quedarían sin stock y cuándo?"*
-""", icon="ℹ️")
+**Herramienta de Análisis Prescriptivo**
+Permite simular el impacto de eventos de negocio (como campañas de marketing) sobre el inventario antes de que ocurran. 
+Responde a preguntas como: "¿Qué pasaría si lanzo una campaña 2x1 y la demanda de antigripales sube un 50%? ¿Qué farmacias se quedarían sin stock y cuándo?"
+""")
 
 df_total = cargar_datos()
 datos_modelos = cargar_modelos()
-df_clima = cargar_clima() # <-- ¡AÑADIR CARGA DE CLIMA!
+df_clima = cargar_clima()
 
 if df_total is not None and datos_modelos is not None:
     df_stock_actual = simular_stock_actual(df_total)
 
-    # --- Filtros de la Barra Lateral ---
+    # --- Filtros ---
     st.sidebar.title("Parámetros del Simulador")
-    st.sidebar.header("Ajuste de Escenarios (What-If)")
+    st.sidebar.header("Ajuste de Escenarios")
     st.sidebar.info("Ajusta la demanda esperada para probar escenarios.")
 
     ajuste_antigripal = st.sidebar.slider(
         "Ajuste Demanda 'Antigripal' (%)", -50, 100, 0, 10,
-        help="Simula un aumento (ej. +50% por campaña) o caída (ej. -20% por invierno suave) en la demanda."
+        help="Simula un aumento o caída porcentual en la demanda."
     )
     ajuste_alergia = st.sidebar.slider(
         "Ajuste Demanda 'Alergia' (%)", -50, 100, 0, 10,
-        help="Simula el impacto de una primavera fuerte (+30%) o débil (-10%)."
+        help="Simula un aumento o caída porcentual en la demanda."
     )
     st.sidebar.divider()
     st.sidebar.header("Parámetros de Análisis")
@@ -180,7 +176,7 @@ if df_total is not None and datos_modelos is not None:
     
     dias_a_pronosticar = st.sidebar.slider(
         "Horizonte de Simulación (Días):", 
-        min_value=7, max_value=30, value=14, step=7, key='sim_dias'
+        min_value=7, max_value=60, value=14, step=7, key='sim_dias'
     )
     stock_seguridad_pct = st.sidebar.slider(
         "Stock de Seguridad (% de Demanda):", 
@@ -193,12 +189,15 @@ if df_total is not None and datos_modelos is not None:
         if farmacia_sel != 'Todas':
             df_a_revisar = df_a_revisar[df_a_revisar['Farmacia_ID'] == farmacia_sel]
         
+        # Precios para calcular impacto económico
         df_precios = df_total[['Producto', 'Precio_Unitario_€']].drop_duplicates(subset='Producto').set_index('Producto')
+        
+        # Unir categorías
         df_a_revisar = df_a_revisar.merge(
             df_total[['Producto', 'Categoria']].drop_duplicates(),
             on='Producto', how='left'
         )
-        # Filtramos solo por las categorías que tienen modelos avanzados
+        # Filtrar solo productos modelables
         df_a_revisar = df_a_revisar[df_a_revisar['Categoria'].isin(['Alergia', 'Antigripal'])]
 
         if df_a_revisar.empty:
@@ -221,28 +220,30 @@ if df_total is not None and datos_modelos is not None:
                 producto = row.Producto
                 categoria = row.Categoria
                 stock_actual = row.Stock_Actual
-                try:
-                    precio_unitario = df_precios.loc[producto, 'Precio_Unitario_€']
-                except KeyError:
-                    precio_unitario = 0 
+                
+                try: precio_unitario = df_precios.loc[producto, 'Precio_Unitario_€']
+                except: precio_unitario = 0 
                 
                 barra_progreso.progress((i+1)/total_productos, text=f"Simulando: {producto}...")
                 
+                # Buscar modelo
                 clave_modelo = f"{farmacia_id}::{producto}"
                 info_modelo = modelos_cargados.get(clave_modelo)
                 
-                if info_modelo is None:
-                    continue 
+                if info_modelo is None: continue 
                 
                 modelo = info_modelo['model']
-                df_historico_producto = df_total[
+                
+                # Obtener historial específico para la recursión
+                df_hist_prod = df_total[
                     (df_total['Farmacia_ID'] == farmacia_id) &
                     (df_total['Producto'] == producto)
                 ]
                 
-                # --- ¡CORRECCIÓN! Pasar 'df_clima' a la función ---
-                predicciones_diarias = generar_pronostico_avanzado(modelo, df_historico_producto, df_clima, dias_a_pronosticar, fecha_max_hist)
+                # --- PREDICCIÓN RECURSIVA 
+                predicciones_diarias = predecir_recursivo(modelo, df_hist_prod, df_clima, dias_a_pronosticar, fecha_max_hist)
                 
+                # Aplicar Ajuste del Simulador
                 ajuste_pct = 0
                 if categoria == 'Antigripal': ajuste_pct = ajuste_antigripal
                 elif categoria == 'Alergia': ajuste_pct = ajuste_alergia
@@ -254,6 +255,7 @@ if df_total is not None and datos_modelos is not None:
                 stock_seguridad_unidades = demanda_total_simulada * (stock_seguridad_pct / 100)
                 stock_util = stock_actual - stock_seguridad_unidades
                 
+                # Calcular evolución de stock día a día
                 stock_restante = stock_util
                 dias_hasta_rotura = "OK"
                 ventas_perdidas_producto = 0
@@ -296,45 +298,48 @@ if df_total is not None and datos_modelos is not None:
                 })
             
             barra_progreso.empty() 
-            st.success(f"¡Simulación completada!")
+            st.success(f"Simulación completada")
             
             st.header("Resultados de la Simulación")
             
+            # Fechas para el título
             fecha_inicio_sim = (pd.to_datetime(fecha_max_hist) + timedelta(days=1)).strftime('%d-%b-%Y')
             fecha_fin_sim = (pd.to_datetime(fecha_max_hist) + timedelta(days=dias_a_pronosticar)).strftime('%d-%b-%Y')
             st.subheader(f"Horizonte Simulado: {fecha_inicio_sim} al {fecha_fin_sim}")
             
             col1, col2, col3 = st.columns(3)
-            col1.metric("Productos en Riesgo de Rotura", f"{productos_en_riesgo_count}")
-            col2.metric("Ventas Totales en Riesgo", f"{ventas_en_riesgo_total:,.0f} €")
+            col1.metric("Productos en Riesgo", f"{productos_en_riesgo_count}")
+            col2.metric("Ventas en Riesgo", f"{ventas_en_riesgo_total:,.0f} €")
             if dias_hasta_rotura_list:
                 dias_avg = np.mean(dias_hasta_rotura_list)
-                col3.metric("Días Promedio hasta Rotura", f"{dias_avg:.1f} días")
+                col3.metric("Promedio Días a Rotura", f"{dias_avg:.1f} días")
             else:
-                col3.metric("Días Promedio hasta Rotura", "N/A")
+                col3.metric("Promedio Días a Rotura", "N/A")
             
             st.divider()
 
-            st.subheader(f"Proyección de Agotamiento de Stock (Top 5 en Riesgo)")
+            st.subheader("Proyección de Agotamiento de Stock (Top 5 en Riesgo)")
             
             if not df_grafico_list:
-                st.info("¡Buenas noticias! Ningún producto está en riesgo de rotura de stock bajo este escenario.")
+                st.success("¡Buenas noticias! El inventario soporta este escenario sin roturas.")
             else:
                 df_grafico_final = pd.concat(df_grafico_list)
                 
+                # Filtrar Top 5 peores casos
                 df_ranking = pd.DataFrame(resultados_tabla)
                 df_ranking = df_ranking[df_ranking['Días hasta Rotura'] != 'OK']
                 df_ranking['Dias_Num'] = df_ranking['Días hasta Rotura'].str.replace(' días', '').astype(int)
                 df_ranking['Producto_Farmacia'] = df_ranking.apply(lambda row: f"{row['Producto']} ({row['Farmacia']})", axis=1)
-                top_5_en_riesgo = df_ranking.nsmallest(5, 'Dias_Num')['Producto_Farmacia']
+                top_5 = df_ranking.nsmallest(5, 'Dias_Num')['Producto_Farmacia']
 
-                df_grafico_final = df_grafico_final[df_grafico_final['Producto_Farmacia'].isin(top_5_en_riesgo)]
+                df_grafico_final = df_grafico_final[df_grafico_final['Producto_Farmacia'].isin(top_5)]
                 
+                # Gráfico
                 regla_cero = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(color='red', strokeDash=[5,5]).encode(y='y')
                 
                 line_chart = alt.Chart(df_grafico_final).mark_line(point=True).encode(
                     x=alt.X('Dia', title=f'Días desde {fecha_inicio_sim}'), 
-                    y=alt.Y('Stock_Restante', title='Unidades de Stock (Útil)'),
+                    y=alt.Y('Stock_Restante', title='Stock Útil Restante (Unidades)'),
                     color=alt.Color('Producto_Farmacia', title='Producto (Farmacia)'),
                     tooltip=['Producto_Farmacia', 'Dia', 'Stock_Restante']
                 ).interactive()
@@ -343,36 +348,37 @@ if df_total is not None and datos_modelos is not None:
                 
                 st.info("""
                 **Cómo leer este gráfico:**
-                * Este gráfico muestra cómo se agota el **"Stock Útil"** (Stock Actual - Stock de Seguridad) día a día.
-                * La **línea roja (en 0)** es la rotura de stock.
-                * Cuando una línea de producto la cruza, significa que ese día se agotan las existencias.
+                * Muestra el agotamiento del **"Stock Útil"** día a día.
+                * La **línea roja (0)** indica rotura de stock.
+                * El cruce de una línea con el 0 indica el día exacto del agotamiento.
                 """)
 
-            st.subheader("Resumen de Impacto por Producto")
+            st.subheader("Resumen de Impacto")
             
             df_resultados = pd.DataFrame(resultados_tabla)
             
-            columnas_resumen = ["Farmacia", "Producto", "Días hasta Rotura", "Ventas en Riesgo (€)", "Ajuste Aplicado (%)"]
-            df_resumen = df_resultados[columnas_resumen]
+            # Tabla Resumen Limpia
+            cols_resumen = ["Farmacia", "Producto", "Días hasta Rotura", "Ventas en Riesgo (€)", "Ajuste Aplicado (%)"]
+            df_resumen = df_resultados[cols_resumen]
             
-            def estilizar_riesgo(fila):
+            def estilo_riesgo(fila):
                 if fila["Días hasta Rotura"] != "OK":
-                    return [f'background-color: #9B2B2B; color: white'] * len(fila) # Rojo oscuro
+                    return [f'background-color: #8B0000; color: white'] * len(fila) # Rojo oscuro profesional
                 else:
                     return [''] * len(fila)
 
-            st.dataframe(df_resumen.style.apply(estilizar_riesgo, axis=1), use_container_width=True)
+            st.dataframe(df_resumen.style.apply(estilo_riesgo, axis=1), use_container_width=True)
 
-            with st.expander("Ver cálculos y detalles completos"):
+            with st.expander("Ver cálculos detallados"):
                 st.dataframe(df_resultados, use_container_width=True)
             
             csv_data = convert_df_to_csv(df_resultados)
             st.download_button(
-                label="Descargar Simulación Detallada en CSV",
+                label="Descargar Simulación en CSV",
                 data=csv_data,
                 file_name=f"reporte_simulacion.csv",
                 mime='text/csv',
                 use_container_width=True
             )
 else:
-    st.error("Error al cargar los datos. Revisa el archivo CSV y asegúrate de haber ejecutado 'train_models.py'.")
+    st.error("Error al cargar datos. Revisa que 'train_models.py' se haya ejecutado correctamente.")

@@ -5,350 +5,284 @@ import altair as alt
 import streamlit as st
 import warnings
 import joblib
-from datetime import datetime
+import holidays
+from datetime import datetime, timedelta
 from statsmodels.tsa.seasonal import seasonal_decompose
-import holidays # <-- Importación necesaria
 
+# Configuración
 warnings.simplefilter(action='ignore', category=FutureWarning)
-warnings.simplefilter(action='ignore', category=st.errors.StreamlitAPIWarning)
-
-# --- ¡¡AQUÍ ESTÁ LA CORRECCIÓN 1!! ---
-# Añadimos la configuración de página para que use el layout ancho
 st.set_page_config(page_title="Resumen General", layout="wide")
 
-# --- FUNCIONES DE DATOS Y MODELOS ---
+# --- FUNCIONES DE DATOS ---
 
 @st.cache_data
 def cargar_datos(file_name='ventas_farmacia_fake.csv'):
-    """Carga y prepara los datos iniciales desde el CSV."""
     try:
-        df = pd.read_csv(
-            file_name,
-            delimiter=';',
-            decimal=',',
-            parse_dates=['Fecha']
-        )
+        df = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
         df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
         return df
     except FileNotFoundError:
-        st.error(f"¡ERROR! No se encontró el archivo '{file_name}'.")
+        st.error(f"¡ERROR! No se encontró '{file_name}'.")
         return None
 
 @st.cache_resource
 def cargar_modelos(file_name='modelos_farmacia.joblib'):
-    """Carga los modelos pre-entrenados y sus métricas desde el archivo joblib."""
     try:
         datos_modelos = joblib.load(file_name)
-        # (El mensaje de éxito ya se muestra en la página principal 1_Bienvenida.py)
-        # st.sidebar.success(f"Modelos de IA cargados (Entrenados el {datos_modelos['fecha_entrenamiento'].strftime('%d-%m-%Y')})")
+        st.sidebar.success(f"Modelos Premium cargados (Entrenados el {datos_modelos['fecha_entrenamiento'].strftime('%d-%m-%Y')})")
         return datos_modelos
     except FileNotFoundError:
-        st.error(f"¡ERROR! No se encontró el archivo de modelos '{file_name}'.")
-        st.info("Por favor, ejecuta el script 'train_models.py' en tu terminal para generar el archivo.")
+        st.error(f"¡ERROR! No se encontró '{file_name}'.")
         return None
 
 @st.cache_data
 def cargar_clima(file_name='clima_madrid.csv'):
-    """Carga los datos climáticos descargados."""
     try:
         df_clima = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
         df_clima['Fecha'] = pd.to_datetime(df_clima['Fecha']).dt.date
         return df_clima
     except FileNotFoundError:
-        st.warning(f"Advertencia: No se encontró '{file_name}'. El pronóstico funcionará sin datos climáticos.")
         return None
 
-# --- ¡NUEVAS FUNCIONES AVANZADAS PARA PREDICCIÓN! ---
+# --- INGENIERÍA DE CARACTERÍSTICAS (Debe coincidir con train_models.py) ---
 
-def simular_festivos(df_fechas):
+def crear_features_un_paso(df_window, fecha_objetivo, df_clima):
     """
-    Usa la librería 'holidays' para crear la feature 'es_festivo'.
-    Asume que df_fechas tiene una columna 'ds'.
+    Calcula las features para UNA sola fila (la fecha objetivo) basándose
+    en la ventana de datos históricos proporcionada.
     """
-    df = df_fechas.copy()
-    # Festivos Reales (España), +1 año para predicciones
-    festivos_espana = holidays.Spain(years=[2022, 2023, 2024, 2025])
-    df['es_festivo'] = df['ds'].isin(festivos_espana).astype(int)
-    return df
-
-def crear_features_avanzadas_para_prediccion(df_diario, df_futuro, df_clima):
-    """
-    Crea las features (lag, rolling, clima, festivos) para el set de predicción,
-    usando los datos históricos como base.
-    """
-    df_diario_copy = df_diario.set_index('ds')
-    df_futuro_copy = df_futuro.set_index('ds')
+    # 1. Crear fila base
+    row = pd.DataFrame({'ds': [pd.to_datetime(fecha_objetivo)]})
     
-    df = pd.concat([df_diario_copy, df_futuro_copy])
-    df = df.reset_index() # 'ds' es ahora una columna
-
-    # 1. Características de tiempo
-    df['mes'] = df['ds'].dt.month
-    df['dia_del_ano'] = df['ds'].dt.dayofyear
-    df['dia_de_la_semana'] = df['ds'].dt.dayofweek
-    df['ano'] = df['ds'].dt.year
+    # 2. Features Temporales
+    row['mes'] = row['ds'].dt.month
+    row['dia_semana'] = row['ds'].dt.dayofweek
+    row['dia_ano'] = row['ds'].dt.dayofyear
     
-    # 2. Características Externas (Reales y Simuladas)
-    df = simular_festivos(df) # <-- Pasa el df con la columna 'ds'
-    df['temporada_gripe'] = df['mes'].isin([10, 11, 12, 1, 2, 3]).astype(int)
-    df['temporada_polen'] = df['mes'].isin([3, 4, 5, 6]).astype(int)
+    # 3. Cíclicas
+    row['mes_sin'] = np.sin(2 * np.pi * row['mes'] / 12)
+    row['mes_cos'] = np.cos(2 * np.pi * row['mes'] / 12)
+    row['dia_semana_sin'] = np.sin(2 * np.pi * row['dia_semana'] / 7)
+    row['dia_semana_cos'] = np.cos(2 * np.pi * row['dia_semana'] / 7)
     
+    # 4. Festivos
+    es_holidays = holidays.Spain(years=[fecha_objetivo.year])
+    row['es_festivo'] = row['ds'].isin(es_holidays).astype(int)
+    
+    # 5. Temporadas
+    row['temp_gripe'] = row['mes'].isin([10, 11, 12, 1, 2]).astype(int)
+    row['temp_alergia'] = row['mes'].isin([3, 4, 5, 6]).astype(int)
+    
+    # 6. Clima (Lookup)
+    t_media = 15.0
     if df_clima is not None:
-        df_clima_copy = df_clima.copy()
-        df_clima_copy['ds'] = pd.to_datetime(df_clima_copy['Fecha'])
-        df = df.merge(df_clima_copy[['ds', 'Temperatura_Media']], on='ds', how='left')
-        df['Temperatura_Media'] = df['Temperatura_Media'].fillna(method='ffill').fillna(method='bfill')
-    else:
-        df['Temperatura_Media'] = 15.0
+        match = df_clima[df_clima['Fecha'] == fecha_objetivo]
+        if not match.empty:
+            t_media = match.iloc[0]['Temperatura_Media']
+    row['Temperatura_Media'] = t_media
     
-    # 3. Características de Retraso (Lag) y Móviles (Rolling)
-    df = df.set_index('ds') # Volver a poner 'ds' como índice para shift/rolling
-    df['ventas_lag_1'] = df['y'].shift(1)
-    df['ventas_lag_7'] = df['y'].shift(7)
-    df['media_movil_7d'] = df['y'].shift(1).rolling(window=7, min_periods=1).mean()
-    df['media_movil_30d'] = df['y'].shift(1).rolling(window=30, min_periods=1).mean()
+    # --- FEATURES COMPLEJAS (Lags y Rolling) ---
+    # Necesitamos los datos históricos (df_window) para calcular esto
+    # df_window debe estar ordenado y terminar en el día anterior a fecha_objetivo
     
-    df = df.bfill().reset_index() # Devolver 'ds' como columna
+    historia_y = df_window['y'].values
     
-    return df.iloc[-len(df_futuro):]
+    # Lags
+    row['lag_1'] = historia_y[-1] if len(historia_y) >= 1 else 0
+    row['lag_2'] = historia_y[-2] if len(historia_y) >= 2 else 0
+    row['lag_7'] = historia_y[-7] if len(historia_y) >= 7 else 0
+    row['lag_14'] = historia_y[-14] if len(historia_y) >= 14 else 0
+    
+    # Rolling Means
+    row['roll_mean_7'] = pd.Series(historia_y).rolling(window=7).mean().iloc[-1] if len(historia_y) >= 7 else 0
+    row['roll_mean_28'] = pd.Series(historia_y).rolling(window=28).mean().iloc[-1] if len(historia_y) >= 28 else 0
+    
+    # Rolling Std (Volatilidad)
+    row['roll_std_7'] = pd.Series(historia_y).rolling(window=7).std().iloc[-1] if len(historia_y) >= 7 else 0
+    
+    # Tendencia
+    rm7 = row['roll_mean_7'].values[0]
+    rm7_prev = pd.Series(historia_y).rolling(window=7).mean().iloc[-8] if len(historia_y) >= 8 else rm7
+    row['tendencia_semanal'] = rm7 - rm7_prev
+    
+    return row
 
-def generar_pronostico_avanzado(model, df_historico, df_clima, dias_a_pronosticar, fecha_maxima_historica):
+def predecir_recursivo(model, df_historico, df_clima, dias_a_pronosticar):
     """
-    Genera la predicción de demanda usando el modelo AVANZADO.
+    Realiza predicciones día a día, actualizando el historial con la propia predicción
+    para calcular correctamente los lags futuros.
     """
-    fecha_max_dt = pd.to_datetime(fecha_maxima_historica)
-    fechas_futuras = pd.date_range(
-        start=fecha_max_dt + pd.Timedelta(days=1),
-        periods=dias_a_pronosticar, freq='D'
-    )
-    df_futuro_base = pd.DataFrame({'ds': fechas_futuras, 'y': np.nan})
+    # Preparamos historial inicial
+    historial = df_historico.copy().sort_values('Fecha')
+    historial = historial.rename(columns={'Fecha': 'ds', 'Cantidad': 'y'})
     
-    df_diario = df_historico.groupby('Fecha')['Cantidad'].sum().reset_index()
-    df_diario = df_diario.rename(columns={'Fecha': 'ds', 'Cantidad': 'y'})
-    df_diario['ds'] = pd.to_datetime(df_diario['ds'])
+    ult_fecha = pd.to_datetime(historial['ds'].max())
+    predicciones = []
+    fechas_futuras = []
     
-    df_futuro_features = crear_features_avanzadas_para_prediccion(df_diario, df_futuro_base, df_clima)
-
-    features = [
-        'mes', 'dia_del_ano', 'dia_de_la_semana', 'ano', 'es_festivo',
-        'temporada_gripe', 'temporada_polen', 'Temperatura_Media',
-        'ventas_lag_1', 'ventas_lag_7',
-        'media_movil_7d', 'media_movil_30d'
+    feature_order = [
+        'mes_sin', 'mes_cos', 'dia_semana_sin', 'dia_semana_cos', 
+        'es_festivo', 'temp_gripe', 'temp_alergia', 'Temperatura_Media',
+        'lag_1', 'lag_2', 'lag_7', 'lag_14',
+        'roll_mean_7', 'roll_mean_28', 'roll_std_7', 'tendencia_semanal'
     ]
     
-    df_futuro_features = df_futuro_features.fillna(0)
-    X_pred = df_futuro_features[features]
-    
-    prediccion_futura = model.predict(X_pred)
-    prediccion_futura[prediccion_futura < 0] = 0
-    
-    df_futuro_base['Prediccion'] = prediccion_futura.round(0).astype(int)
-    return df_futuro_base # Devolvemos el df completo (con 'ds' como columna)
-# --- FIN DE FUNCIONES ---
+    # Bucle día a día
+    for i in range(dias_a_pronosticar):
+        fecha_obj = ult_fecha + timedelta(days=i+1)
+        
+        # Crear features para ESTE día usando el historial acumulado
+        row_features = crear_features_un_paso(historial, fecha_obj, df_clima)
+        
+        # Predecir
+        X = row_features[feature_order]
+        y_pred = model.predict(X)[0]
+        y_pred = max(0, y_pred) # No ventas negativas
+        
+        # Guardar
+        predicciones.append(int(round(y_pred)))
+        fechas_futuras.append(fecha_obj)
+        
+        # AÑADIR PREDICCIÓN AL HISTORIAL (para que el siguiente loop la use como lag)
+        nueva_fila = pd.DataFrame({'ds': [fecha_obj], 'y': [y_pred]})
+        historial = pd.concat([historial, nueva_fila], ignore_index=True)
+        
+    return pd.DataFrame({'ds': fechas_futuras, 'Prediccion': predicciones})
 
-# --- INICIO DE LA APLICACIÓN ---
+# --- APP ---
+
 st.title("Resumen General y Pronóstico de Demanda")
 
 df_total = cargar_datos()
-datos_modelos = cargar_modelos() 
-# --- ¡¡AQUÍ ESTÁ LA CORRECCIÓN 2!! ---
-df_clima = cargar_clima() # Cargar los datos climáticos
+datos_modelos = cargar_modelos()
+df_clima = cargar_clima()
 
-if df_total is not None and datos_modelos is not None:
-    
-    # --- BARRA LATERAL (EL MENÚ DE INTERACCIÓN) ---
+if df_total is not None:
+    # Sidebar Filtros
     st.sidebar.title("Menú de Filtros")
-    st.sidebar.header("Filtros Globales")
-    fecha_min = df_total['Fecha'].min()
-    fecha_max = df_total['Fecha'].max()
-    
-    rango_fechas = st.sidebar.date_input(
-        "Selecciona un rango de fechas:",
-        value=[fecha_min, fecha_max],
-        min_value=fecha_min,
-        max_value=fecha_max
-    )
+    fecha_min, fecha_max = df_total['Fecha'].min(), df_total['Fecha'].max()
+    rango_fechas = st.sidebar.date_input("Rango de fechas:", [fecha_min, fecha_max])
     
     lista_farmacias = ['Todas'] + sorted(list(df_total['Farmacia_ID'].unique()))
-    farmacia_seleccionada = st.sidebar.selectbox(
-        "Selecciona una Farmacia:",
-        options=lista_farmacias
-    )
+    farmacia_sel = st.sidebar.selectbox("Farmacia:", lista_farmacias)
     
-    categorias_interes = ['Alergia', 'Antigripal']
-    lista_productos_interes = sorted(
-        df_total[df_total['Categoria'].isin(categorias_interes)]['Producto'].unique()
-    )
-
-    # --- DATOS FILTRADOS ---
+    # Filtrado
+    df_filtered = df_total.copy()
     if len(rango_fechas) == 2:
-        df_filtrado = df_total[
-            (df_total['Fecha'] >= rango_fechas[0]) &
-            (df_total['Fecha'] <= rango_fechas[1])
-        ]
-        if farmacia_seleccionada != 'Todas':
-            df_filtrado = df_filtrado[df_filtrado['Farmacia_ID'] == farmacia_seleccionada]
-    else:
-        df_filtrado = df_total.copy()
+        df_filtered = df_filtered[(df_filtered['Fecha'] >= rango_fechas[0]) & (df_filtered['Fecha'] <= rango_fechas[1])]
+    if farmacia_sel != 'Todas':
+        df_filtered = df_filtered[df_filtered['Farmacia_ID'] == farmacia_sel]
 
-    # --- INICIO DE LA ESTRUCTURA DE PESTAÑAS ---
+    # Pestañas
+    tab1, tab2, tab3 = st.tabs(["KPIs y Métricas", "Análisis de Épocas", "Pronóstico de IA"])
     
-    tab1, tab2, tab3 = st.tabs([
-        "KPIs y Métricas Clave", 
-        "Análisis de Épocas", 
-        "Pronóstico de IA"
-    ])
-
-    # --- PESTAÑA 1: KPIs y Métricas ---
     with tab1:
-        st.header(f"Métricas para: {farmacia_seleccionada}")
-        total_ventas = df_filtrado['Total_Venta_€'].sum()
-        total_unidades = df_filtrado['Cantidad'].sum()
-        num_transacciones = len(df_filtrado) 
+        st.header(f"Métricas para: {farmacia_sel}")
         col1, col2, col3 = st.columns(3)
-        col1.metric("Ventas Totales (€)", f"{total_ventas:,.2f} €")
-        col2.metric("Unidades Totales Vendidas", f"{total_unidades:,.0f}")
-        col3.metric("Transacciones Registradas", f"{num_transacciones:,.0f}")
+        col1.metric("Ventas Totales", f"{df_filtered['Total_Venta_€'].sum():,.2f} €")
+        col2.metric("Unidades", f"{df_filtered['Cantidad'].sum():,.0f}")
+        col3.metric("Transacciones", f"{len(df_filtered):,.0f}")
+        
         st.divider()
         st.subheader("Ventas por Categoría")
-        df_cat_agg = df_filtrado.groupby('Categoria')['Total_Venta_€'].sum().reset_index()
-        chart_barras = alt.Chart(df_cat_agg).mark_bar().encode(
-            x=alt.X('Categoria', title=None), y=alt.Y('Total_Venta_€', title='Ventas Totales (€)'),
-            color='Categoria', tooltip=['Categoria', 'Total_Venta_€']
+        chart = alt.Chart(df_filtered).mark_bar().encode(
+            x='Categoria', y='sum(Total_Venta_€)', color='Categoria', tooltip=['Categoria', 'sum(Total_Venta_€)']
         ).interactive()
-        st.altair_chart(chart_barras, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
-    # --- PESTAÑA 2: Análisis de Épocas ---
     with tab2:
-        st.header("Análisis Estacional: Alergia vs. Antigripal")
-        st.markdown("Agregación semanal de unidades vendidas.")
-        df_grafico_epocas = df_filtrado[df_filtrado['Categoria'].isin(categorias_interes)]
-        df_grafico_epocas['Fecha'] = pd.to_datetime(df_grafico_epocas['Fecha'])
-        if not df_grafico_epocas.empty:
-            df_grafico_epocas.set_index('Fecha', inplace=True)
-            df_semanal = df_grafico_epocas.groupby('Categoria').resample('W')['Cantidad'].sum().reset_index()
-            chart_epocas = alt.Chart(df_semanal).mark_line(point=True).encode(
-                x=alt.X('Fecha', title='Fecha (Semanas)'), y=alt.Y('Cantidad', title='Cantidad Total Vendida'),
-                color=alt.Color('Categoria', title='Categoría'), tooltip=['Fecha', 'Categoria', 'Cantidad']
-            ).interactive()
-            st.altair_chart(chart_epocas, use_container_width=True)
-        else:
-            st.warning("No hay datos para 'Alergia' o 'Antigripal' en los filtros seleccionados.")
+        st.header("Análisis Estacional")
+        # Gráfico de líneas simple para ver tendencias
+        chart_line = alt.Chart(df_filtered).mark_line().encode(
+            x='yearmonth(Fecha)', y='sum(Cantidad)', color='Categoria'
+        ).interactive()
+        st.altair_chart(chart_line, use_container_width=True)
         
+        # Descomposición (Simplified for robustness)
         st.divider()
-        st.header("Análisis de Componentes (Tendencia y Estacionalidad)")
-        st.markdown("Descompone la serie temporal de un producto para entender sus patrones subyacentes.")
-        st.info("""
-        Este análisis separa las ventas de un producto en tres partes:
-        - **Tendencia:** La dirección general de las ventas a largo plazo (¿está creciendo o decreciendo?).
-        - **Estacionalidad:** El patrón repetitivo que ocurre cada año (ej. el pico de gripe en invierno).
-        - **Residuo:** El "ruido" aleatorio que no se puede explicar por las dos anteriores.
-        """)
-        producto_decomp = st.selectbox("Selecciona un producto para descomponer:", options=lista_productos_interes, index=0)
-        with st.expander(f"Ver descomposición para '{producto_decomp}'"):
-            try:
-                df_producto = df_total[df_total['Producto'] == producto_decomp].copy()
-                if farmacia_seleccionada != 'Todas':
-                    df_producto = df_producto[df_producto['Farmacia_ID'] == farmacia_seleccionada]
-                df_producto['Fecha'] = pd.to_datetime(df_producto['Fecha'])
-                df_diario = df_producto.groupby('Fecha')['Cantidad'].sum()
-                all_dates = pd.date_range(start=df_diario.index.min(), end=df_diario.index.max(), freq='D')
-                df_diario = df_diario.reindex(all_dates, fill_value=0)
-                if len(df_diario) < (365 * 2):
-                    st.warning(f"No hay suficientes datos (se necesitan 2 años) para '{producto_decomp}' en esta farmacia.")
-                else:
-                    decomposition = seasonal_decompose(df_diario, model='additive', period=365)
-                    df_decomp = pd.DataFrame({'Tendencia': decomposition.trend, 'Estacionalidad': decomposition.seasonal, 'Residuo': decomposition.resid}).reset_index().rename(columns={'index': 'Fecha'})
-                    df_decomp_melted = df_decomp.melt('Fecha', var_name='Componente', value_name='Valor')
-                    chart_decomp = alt.Chart(df_decomp_melted).mark_line().encode(
-                        x=alt.X('Fecha', title=''), y=alt.Y('Valor', title=None), color='Componente', tooltip=['Fecha', 'Componente', 'Valor']
-                    ).properties(title=f"Descomposición de '{producto_decomp}' (Diario)").facet(
-                        row=alt.Row('Componente', title=None, sort=['Tendencia', 'Estacionalidad', 'Residuo']),
-                        resolve=alt.Resolve(scale={'y': 'independent'})
-                    ).interactive()
-                    st.altair_chart(chart_decomp, use_container_width=True)
-            except Exception as e:
-                st.error(f"No se pudo descomponer la serie temporal. Causa probable: datos insuficientes.")
-
-    # --- PESTAÑA 3: Pronóstico de IA ---
-    with tab3:
-        st.header(f"Pronóstico de Demanda para: {farmacia_seleccionada}")
-        st.sidebar.divider() 
-        st.sidebar.header("Filtros de Pronóstico (IA)")
-        producto_pronostico = st.sidebar.selectbox("Selecciona un Producto para Pronosticar:", options=lista_productos_interes, key='pronostico_producto')
-        dias_a_pronosticar = st.sidebar.slider("Días a pronosticar:", 30, 120, 90, 15)
-        
-        if st.button(f"Generar pronóstico de {dias_a_pronosticar} días", type="primary"):
-            if datos_modelos is None:
-                st.error("No se pueden generar pronósticos porque el archivo de modelos no está cargado.")
+        st.subheader("Descomposición de Serie Temporal")
+        prods = sorted(df_filtered['Producto'].unique())
+        if prods:
+            p_sel = st.selectbox("Producto:", prods)
+            df_p = df_filtered[df_filtered['Producto'] == p_sel].groupby('Fecha')['Cantidad'].sum()
+            df_p.index = pd.to_datetime(df_p.index)
+            df_p = df_p.asfreq('D').fillna(0)
+            
+            if len(df_p) > 365*2:
+                res = seasonal_decompose(df_p, model='additive', period=365)
+                st.line_chart(res.trend, height=200)
+                st.caption("Tendencia a largo plazo")
+                st.line_chart(res.seasonal.iloc[:365], height=200) # Solo un año para ver el patrón
+                st.caption("Patrón Estacional (Zoom 1 año)")
             else:
-                with st.spinner("Buscando modelo inteligente y generando pronóstico..."):
-                    clave_modelo = f"{farmacia_seleccionada}::{producto_pronostico}"
-                    modelos_cargados = datos_modelos['modelos']
-                    
-                    info_modelo_seleccionado = modelos_cargados.get(clave_modelo)
-                    
-                    if info_modelo_seleccionado is None:
-                        st.error(f"No se encontró un modelo pre-entrenado para '{producto_pronostico}' en '{farmacia_seleccionada}'.")
-                        st.info("Esto puede ser porque no tenía suficientes datos históricos para un entrenamiento.")
-                    else:
-                        modelo = info_modelo_seleccionado['model']
-                        rmse_modelo = info_modelo_seleccionado['rmse']
-                        df_importancia = info_modelo_seleccionado['importance']
+                st.warning("Datos insuficientes para descomposición.")
+
+    with tab3:
+        st.header("Pronóstico Avanzado (Recursivo)")
+        
+        col_p, col_d = st.columns(2)
+        prod_pred = col_p.selectbox("Producto:", sorted(df_total['Producto'].unique()))
+        days_pred = col_d.slider("Días a predecir:", 7, 90, 30)
+        
+        if st.button("Generar Pronóstico", type="primary"):
+            if datos_modelos:
+                key = f"{farmacia_sel}::{prod_pred}"
+                # Si es 'Todas', cogemos la primera farmacia que tenga el producto para la demo
+                # (En una app real, habría que agregar o entrenar un modelo global)
+                if farmacia_sel == 'Todas':
+                    # Buscar una farmacia válida para este producto
+                    valid_farm = df_total[df_total['Producto'] == prod_pred]['Farmacia_ID'].iloc[0]
+                    key = f"{valid_farm}::{prod_pred}"
+                    st.info(f"Nota: Pronosticando para {valid_farm} como referencia.")
+                
+                model_info = datos_modelos['modelos'].get(key)
+                
+                if model_info:
+                    with st.spinner("Calculando predicción día a día..."):
+                        # Obtener historial completo para las features
+                        df_hist = df_total[
+                            (df_total['Producto'] == prod_pred) & 
+                            (df_total['Farmacia_ID'] == (farmacia_sel if farmacia_sel != 'Todas' else valid_farm))
+                        ]
                         
-                        df_historico_producto = df_total[df_total['Producto'] == producto_pronostico].copy()
-                        if farmacia_seleccionada != 'Todas':
-                            df_historico_producto = df_historico_producto[df_historico_producto['Farmacia_ID'] == farmacia_seleccionada]
+                        df_futuro = predecir_recursivo(
+                            model_info['model'], 
+                            df_hist, 
+                            df_clima, 
+                            days_pred
+                        )
                         
-                        df_futuro = generar_pronostico_avanzado(modelo, df_historico_producto, df_clima, dias_a_pronosticar, fecha_max)
+                        # Visualización
+                        st.success("¡Pronóstico Completado!")
                         
-                        df_real = df_historico_producto.groupby('Fecha')['Cantidad'].sum().reset_index()
-                        df_real = df_real.rename(columns={'Fecha': 'ds', 'Cantidad': 'Ventas'})
-                        df_real['Tipo'] = 'Real'
-                        df_real['ds'] = pd.to_datetime(df_real['ds'])
-                        df_real_reciente = df_real[df_real['ds'] > (pd.to_datetime(fecha_max) - pd.Timedelta(days=365))]
+                        # Métricas
+                        c1, c2 = st.columns([1, 3])
+                        c1.metric("RMSE (Error)", f"{model_info['rmse']:.2f}", help="Error promedio del modelo en unidades.")
                         
-                        df_plot_pred = df_futuro[['ds', 'Prediccion']].rename(columns={'Prediccion': 'Ventas'})
-                        df_plot_pred['Tipo'] = 'Predicción'
+                        # Gráfico Importancia
+                        c2.altair_chart(alt.Chart(model_info['importance'].head(10)).mark_bar().encode(
+                            x='Importancia', y=alt.Y('Impulsor', sort='-x'), tooltip=['Impulsor', 'Importancia']
+                        ).properties(title="Factores Clave del Modelo"), use_container_width=True)
                         
-                        df_plot_combinado = pd.concat([df_real_reciente, df_plot_pred], ignore_index=True)
+                        # Gráfico Resultado
+                        st.subheader("Proyección de Ventas")
                         
-                        chart_pronostico = alt.Chart(df_plot_combinado).mark_line().encode(
-                            x=alt.X('ds', title='Fecha'), y=alt.Y('Ventas', title='Cantidad Vendida'),
-                            color=alt.Color('Tipo', title='Dato'), strokeDash=alt.StrokeDash('Tipo', title='Dato'),
-                            tooltip=['ds', 'Ventas', 'Tipo']
+                        # Unir real + predicción para gráfico continuo
+                        df_hist_plot = df_hist[['Fecha', 'Cantidad']].rename(columns={'Fecha': 'ds', 'Cantidad': 'y'})
+                        df_hist_plot['Tipo'] = 'Real'
+                        df_futuro_plot = df_futuro.rename(columns={'Prediccion': 'y'})
+                        df_futuro_plot['Tipo'] = 'Predicción'
+                        
+                        # Mostrar solo último año + futuro
+                        start_plot = df_futuro_plot['ds'].min() - timedelta(days=365)
+                        df_plot = pd.concat([df_hist_plot[pd.to_datetime(df_hist_plot['ds']) > start_plot], df_futuro_plot])
+                        
+                        chart_pred = alt.Chart(df_plot).mark_line().encode(
+                            x='ds', y='y', color='Tipo', strokeDash='Tipo'
                         ).interactive()
+                        st.altair_chart(chart_pred, use_container_width=True)
                         
-                        st.altair_chart(chart_pronostico, use_container_width=True)
-                        st.success("¡Pronóstico generado con el modelo avanzado!")
-                        
-                        st.divider()
-                        st.header("Análisis del Modelo de IA ('Caja de Cristal')")
-                        
-                        col_metrica, col_impulsores = st.columns([1, 2])
-                        
-                        with col_metrica:
-                            st.subheader("Fiabilidad")
-                            st.metric(
-                                label="Error Promedio (RMSE)",
-                                value=f"{rmse_modelo:.2f} unidades/día",
-                                help="RMSE (Error Cuadrático Medio) indica el error promedio de predicción del modelo. Un valor más bajo es mejor."
-                            )
-                        
-                        with col_impulsores:
-                            st.subheader("Impulsores Clave")
-                            
-                            chart_imp = alt.Chart(df_importancia.head(7)).mark_bar().encode(
-                                x=alt.X('Importancia:Q', title='Importancia Relativa'),
-                                y=alt.Y('Impulsor:N', title='Factor', sort='-x')
-                            ).properties(
-                                title="Top 7 Factores para la Predicción"
-                            ).interactive()
-                            st.altair_chart(chart_imp, use_container_width=True)
-                            st.markdown("Este gráfico muestra qué factores considera el modelo más importantes para hacer su predicción.")
-
-                        st.subheader("Datos del Pronóstico")
-                        st.dataframe(df_futuro.rename(columns={'ds': 'Fecha', 'Prediccion': 'Cantidad_Pronosticada'}).set_index('Fecha'), use_container_width=True)
-
-else:
-    st.error("Error al cargar los datos. Revisa el archivo CSV.")
+                else:
+                    st.error("No hay modelo entrenado para esta combinación.")
+            else:
+                st.error("Modelos no cargados.")

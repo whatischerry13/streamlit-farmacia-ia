@@ -4,327 +4,254 @@ import xgboost as xgb
 import streamlit as st
 import warnings
 import joblib
-from datetime import datetime
-import holidays # <-- Importación necesaria
+import holidays
+from datetime import datetime, timedelta
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 st.set_page_config(page_title="Alerta de Stock (IA)", layout="wide")
 
-# --- 1. Paleta de Colores Profesional (Suave) ---
-COLOR_ALTA = "#9B2B2B"     # Rojo Oscuro (Dark Red)
-COLOR_MEDIA = "#B9770E"    # Ámbar Oscuro (Dark Amber)
-COLOR_BAJA = "#4682B4"     # Azul Acero (SteelBlue)
+# --- Colores ---
+COLOR_ALTA = "#692424"
+COLOR_MEDIA = "#E4B261"
+COLOR_BAJA = "#68A2D1"
+COLOR_OK = "#48A16F"
 
-# --- 2. Función de Descarga ---
+# --- Funciones de Carga ---
 @st.cache_data
 def convert_df_to_csv(df):
-    """Convierte un DataFrame a CSV en memoria para la descarga."""
     return df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
 
-# --- Funciones de Datos y Modelos ---
 @st.cache_data
 def cargar_datos(file_name='ventas_farmacia_fake.csv'):
-    """Carga los datos base desde el CSV."""
     try:
         df = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
         df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
         return df
     except FileNotFoundError:
-        st.error(f"¡ERROR! No se encontró el archivo '{file_name}'.")
+        st.error(f"Error: No se encuentra {file_name}")
+        return None
+
+@st.cache_data
+def cargar_clima(file_name='clima_madrid.csv'):
+    try:
+        df = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
+        df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
+        return df
+    except:
+        return None
+
+@st.cache_resource
+def cargar_modelos(file_name='modelos_farmacia.joblib'):
+    try:
+        return joblib.load(file_name)
+    except:
+        st.error(f"Error: No se encuentra {file_name}")
         return None
 
 @st.cache_data
 def simular_stock_actual(_df_total):
-    """Simula un inventario de 'Stock Actual' para cada producto/farmacia."""
-    st.info("Simulando inventario de stock actual... (se ejecuta una vez)")
-    df_ventas_diarias = _df_total.groupby(['Farmacia_ID', 'Producto'])['Cantidad'].mean().reset_index()
-    df_ventas_diarias = df_ventas_diarias.rename(columns={'Cantidad': 'Venta_Media_Diar'})
-    np.random.seed(123)
-    dias_stock_simulados = np.random.randint(1, 21, size=len(df_ventas_diarias))
-    df_ventas_diarias['Stock_Actual'] = (df_ventas_diarias['Venta_Media_Diar'] * dias_stock_simulados).round(0).astype(int)
-    return df_ventas_diarias[['Farmacia_ID', 'Producto', 'Stock_Actual']]
+    st.info("Sincronizando inventario en tiempo real... (Simulado)")
+    df_grp = _df_total.groupby(['Farmacia_ID', 'Producto'])['Cantidad'].mean().reset_index()
+    np.random.seed(123) # Semilla fija para demo
+    # Stock aleatorio entre 3 y 20 días de venta media
+    df_grp['Stock_Actual'] = (df_grp['Cantidad'] * np.random.randint(3, 20, size=len(df_grp))).astype(int)
+    return df_grp[['Farmacia_ID', 'Producto', 'Stock_Actual']]
 
-@st.cache_resource
-def cargar_modelos(file_name='modelos_farmacia.joblib'):
-    """Carga los modelos pre-entrenados desde el archivo joblib."""
-    try:
-        datos_modelos = joblib.load(file_name)
-        return datos_modelos
-    except FileNotFoundError:
-        st.error(f"¡ERROR! No se encontró el archivo de modelos '{file_name}'.")
-        st.info("Por favor, ejecuta el script 'train_models.py' en tu terminal.")
-        return None
+# --- LÓGICA DE PREDICCIÓN PREMIUM (RECURSIVA) ---
 
-# --- ¡NUEVA FUNCIÓN! Cargar datos climáticos ---
-@st.cache_data
-def cargar_clima(file_name='clima_madrid.csv'):
-    """Carga los datos climáticos descargados."""
-    try:
-        df_clima = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
-        df_clima['Fecha'] = pd.to_datetime(df_clima['Fecha']).dt.date
-        return df_clima
-    except FileNotFoundError:
-        st.warning(f"Advertencia: No se encontró '{file_name}'. El pronóstico funcionará sin datos climáticos.")
-        return None
-
-# --- Funciones de Predicción Avanzada ---
-def simular_festivos(df_fechas):
-    """
-    Usa la librería 'holidays' para crear la feature 'es_festivo'.
-    Asume que df_fechas tiene una columna 'ds'.
-    """
-    df = df_fechas.copy()
-    # Festivos Reales (España), +1 año para predicciones
-    festivos_espana = holidays.Spain(years=[2022, 2023, 2024, 2025])
-    df['es_festivo'] = df['ds'].isin(festivos_espana).astype(int)
-    return df
-
-def crear_features_avanzadas_para_prediccion(df_diario, df_futuro, df_clima):
-    """
-    Crea las features (lag, rolling, clima, festivos) para el set de predicción.
-    """
-    df_diario_copy = df_diario.set_index('ds')
-    df_futuro_copy = df_futuro.set_index('ds')
+def crear_features_un_paso(historia_y, fecha_obj, df_clima):
+    """Genera las 16 features premium para un solo día futuro."""
+    row = pd.DataFrame({'ds': [pd.to_datetime(fecha_obj)]})
     
-    df = pd.concat([df_diario_copy, df_futuro_copy])
-    df = df.reset_index() # 'ds' es ahora una columna
-
-    # 1. Características de tiempo
-    df['mes'] = df['ds'].dt.month
-    df['dia_del_ano'] = df['ds'].dt.dayofyear
-    df['dia_de_la_semana'] = df['ds'].dt.dayofweek
-    df['ano'] = df['ds'].dt.year
+    # 1. Ciclos Temporales
+    mes = fecha_obj.month
+    dia_sem = fecha_obj.weekday()
+    row['mes_sin'] = np.sin(2 * np.pi * mes / 12)
+    row['mes_cos'] = np.cos(2 * np.pi * mes / 12)
+    row['dia_semana_sin'] = np.sin(2 * np.pi * dia_sem / 7)
+    row['dia_semana_cos'] = np.cos(2 * np.pi * dia_sem / 7)
     
-    # 2. Características Externas (Reales y Simuladas)
-    df = simular_festivos(df) # <-- Pasa el df con la columna 'ds'
-    df['temporada_gripe'] = df['mes'].isin([10, 11, 12, 1, 2, 3]).astype(int)
-    df['temporada_polen'] = df['mes'].isin([3, 4, 5, 6]).astype(int)
+    # 2. Festivos y Temporadas
+    es_holidays = holidays.Spain(years=[fecha_obj.year])
+    row['es_festivo'] = int(fecha_obj in es_holidays)
+    row['temp_gripe'] = int(mes in [10, 11, 12, 1, 2])
+    row['temp_alergia'] = int(mes in [3, 4, 5, 6])
     
+    # 3. Clima
+    t_media = 15.0
     if df_clima is not None:
-        df_clima_copy = df_clima.copy()
-        df_clima_copy['ds'] = pd.to_datetime(df_clima_copy['Fecha'])
-        df = df.merge(df_clima_copy[['ds', 'Temperatura_Media']], on='ds', how='left')
-        df['Temperatura_Media'] = df['Temperatura_Media'].fillna(method='ffill').fillna(method='bfill')
-    else:
-        df['Temperatura_Media'] = 15.0 # Valor neutro
+        match = df_clima[df_clima['Fecha'] == fecha_obj]
+        if not match.empty: t_media = match.iloc[0]['Temperatura_Media']
+    row['Temperatura_Media'] = t_media
     
-    # 3. Características de Retraso (Lag) y Móviles (Rolling)
-    df = df.set_index('ds') # Volver a poner 'ds' como índice para shift/rolling
-    df['ventas_lag_1'] = df['y'].shift(1)
-    df['ventas_lag_7'] = df['y'].shift(7)
-    df['media_movil_7d'] = df['y'].shift(1).rolling(window=7, min_periods=1).mean()
-    df['media_movil_30d'] = df['y'].shift(1).rolling(window=30, min_periods=1).mean()
+    # 4. Lags y Rolling (Usando el historial acumulado)
+    # Aseguramos tener datos suficientes, sino 0
+    vals = historia_y
+    row['lag_1'] = vals[-1] if len(vals) >= 1 else 0
+    row['lag_2'] = vals[-2] if len(vals) >= 2 else 0
+    row['lag_7'] = vals[-7] if len(vals) >= 7 else 0
+    row['lag_14'] = vals[-14] if len(vals) >= 14 else 0
     
-    df = df.bfill().reset_index() # Devolver 'ds' como columna
+    row['roll_mean_7'] = pd.Series(vals).rolling(7).mean().iloc[-1] if len(vals)>=7 else 0
+    row['roll_mean_28'] = pd.Series(vals).rolling(28).mean().iloc[-1] if len(vals)>=28 else 0
+    row['roll_std_7'] = pd.Series(vals).rolling(7).std().iloc[-1] if len(vals)>=7 else 0
     
-    return df.iloc[-len(df_futuro):]
+    # Tendencia (Media 7 hoy - Media 7 hace una semana)
+    rm7_prev = pd.Series(vals).rolling(7).mean().iloc[-8] if len(vals)>=8 else row['roll_mean_7'].values[0]
+    row['tendencia_semanal'] = row['roll_mean_7'] - rm7_prev
+    
+    # Orden exacto de columnas que espera el modelo
+    cols = ['mes_sin', 'mes_cos', 'dia_semana_sin', 'dia_semana_cos', 
+            'es_festivo', 'temp_gripe', 'temp_alergia', 'Temperatura_Media',
+            'lag_1', 'lag_2', 'lag_7', 'lag_14',
+            'roll_mean_7', 'roll_mean_28', 'roll_std_7', 'tendencia_semanal']
+    return row[cols]
 
-def generar_pronostico_avanzado(model, df_historico, df_clima, dias_a_pronosticar, fecha_maxima_historica):
-    """Genera la predicción de demanda usando el modelo AVANZADO."""
-    fecha_max_dt = pd.to_datetime(fecha_maxima_historica)
-    fechas_futuras = pd.date_range(start=fecha_max_dt + pd.Timedelta(days=1), periods=dias_a_pronosticar, freq='D')
-    df_futuro_base = pd.DataFrame({'ds': fechas_futuras, 'y': np.nan})
-    df_diario = df_historico.groupby('Fecha')['Cantidad'].sum().reset_index()
-    df_diario = df_diario.rename(columns={'Fecha': 'ds', 'Cantidad': 'y'})
-    df_diario['ds'] = pd.to_datetime(df_diario['ds'])
+def predecir_demanda_futura(modelo, df_hist_prod, df_clima, dias_futuros, fecha_max):
+    """Bucle que predice día a día alimentándose a sí mismo."""
+    historia = list(df_hist_prod.sort_values('Fecha')['Cantidad'].values)
+    predicciones = []
     
-    # --- ¡CORRECCIÓN! Pasar 'df_clima' a la función ---
-    df_futuro_features = crear_features_avanzadas_para_prediccion(df_diario, df_futuro_base, df_clima)
+    for i in range(dias_futuros):
+        fecha_futura = fecha_max + timedelta(days=i+1)
+        
+        # Crear features para mañana usando la historia (que incluye predicciones pasadas)
+        X_test = crear_features_un_paso(historia, fecha_futura, df_clima)
+        
+        # Predecir
+        y_pred = max(0, modelo.predict(X_test)[0])
+        
+        # Guardar y actualizar historia
+        predicciones.append(y_pred)
+        historia.append(y_pred)
+        
+    return np.array(predicciones)
 
-    features = [
-        'mes', 'dia_del_ano', 'dia_de_la_semana', 'ano', 'es_festivo',
-        'temporada_gripe', 'temporada_polen', 'Temperatura_Media',
-        'ventas_lag_1', 'ventas_lag_7',
-        'media_movil_7d', 'media_movil_30d'
-    ]
-    
-    df_futuro_features = df_futuro_features.fillna(0)
-    X_pred = df_futuro_features[features]
-    
-    prediccion_futura = model.predict(X_pred)
-    prediccion_futura[prediccion_futura < 0] = 0
-    return prediccion_futura.round(0).astype(int) 
-
-# --- INTERFAZ DE STREAMLIT ---
-st.title("Sistema de Alerta y Priorización de Stock (IA)")
-
+# --- INTERFAZ ---
+st.title("Sistema de Alerta de Stock con IA")
 st.info("""
-**¿Para qué sirve esto?**
-Esta herramienta predice la demanda diaria de cada producto y la compara con el stock actual para **calcular los "Días hasta Rotura"**. 
-Luego, prioriza automáticamente las alertas (Alta, Media, Baja) para que el equipo de operaciones sepa qué pedidos son más urgentes.
-""", icon="ℹ️") 
+**Herramienta de Priorización Inteligente**
+Utiliza modelos XGBoost optimizados con variables climáticas y de tendencia para predecir el agotamiento de stock.
+Clasifica automáticamente la urgencia de los pedidos basándose en los días restantes de inventario útil.
+""", icon="ℹ️")
 
 df_total = cargar_datos()
+df_clima = cargar_clima()
 datos_modelos = cargar_modelos()
-df_clima = cargar_clima() # <-- ¡AÑADIR CARGA DE CLIMA!
 
 if df_total is not None and datos_modelos is not None:
-    df_stock_actual = simular_stock_actual(df_total)
-
-    # --- Filtros de la Barra Lateral ---
-    st.sidebar.title("Parámetros de Alerta")
+    df_stock = simular_stock_actual(df_total)
+    
+    # Sidebar
+    st.sidebar.header("Configuración")
     lista_farmacias = ['Todas'] + sorted(list(df_total['Farmacia_ID'].unique()))
-    farmacia_sel = st.sidebar.selectbox("Selecciona Farmacia:", options=lista_farmacias, key='alerta_farmacia')
-    lista_categorias = ['Todas'] + sorted(list(df_total['Categoria'].unique()))
-    try:
-        default_index = lista_categorias.index('Antigripal')
-    except ValueError:
-        default_index = 0 
-    cat_sel = st.sidebar.selectbox("Selecciona Categoría:", options=lista_categorias, index=default_index, key='alerta_categoria')
+    farm_sel = st.sidebar.selectbox("Farmacia:", lista_farmacias)
+    
+    lista_cats = sorted(list(df_total['Categoria'].unique()))
+    try: idx_cat = lista_cats.index('Antigripal')
+    except: idx_cat = 0
+    cat_sel = st.sidebar.selectbox("Categoría:", lista_cats, index=idx_cat)
+    
     st.sidebar.divider()
-    
-    dias_a_pronosticar = st.sidebar.slider(
-        "Horizonte de Análisis (Días):", 
-        min_value=7, max_value=30, value=14, step=7,
-        help="¿Con cuántos días de antelación quieres analizar el riesgo de rotura?"
-    )
-    
-    stock_seguridad_pct = st.sidebar.slider(
-        "Stock de Seguridad (% de Demanda):", 
-        min_value=0, max_value=100, value=20, step=5,
-        help="Porcentaje de la demanda total del horizonte que se guardará como 'colchón'. La rotura se calcula cuando se empieza a consumir este colchón."
-    )
-    
-    PRIORIDAD_ALTA_DIAS = 3
-    PRIORIDAD_MEDIA_DIAS = 7
-    
+    dias_horizonte = st.sidebar.slider("Horizonte de Análisis (Días):", 7, 30, 14)
+    stock_seguridad_pct = st.sidebar.slider("Stock de Seguridad (%)", 0, 50, 10)
+
+    # Leyenda
     st.sidebar.markdown("---")
-    st.sidebar.markdown("**Leyenda de Prioridad**")
-    
-    st.sidebar.markdown(f"""
-    <div style="padding: 6px; border-radius: 5px; background-color: {COLOR_ALTA}; color: white; margin-bottom: 5px; font-family: sans-serif; font-size: 0.9rem;">
-        <strong>ALTA:</strong> Rotura en ≤ {PRIORIDAD_ALTA_DIAS} días
-    </div>
-    <div style="padding: 6px; border-radius: 5px; background-color: {COLOR_MEDIA}; color: white; margin-bottom: 5px; font-family: sans-serif; font-size: 0.9rem;">
-        <strong>MEDIA:</strong> Rotura en ≤ {PRIORIDAD_MEDIA_DIAS} días
-    </div>
-    <div style="padding: 6px; border-radius: 5px; background-color: {COLOR_BAJA}; color: white; margin-bottom: 5px; font-family: sans-serif; font-size: 0.9rem;">
-        <strong>BAJA:</strong> Rotura en > {PRIORIDAD_MEDIA_DIAS} días
-    </div>
-    <div style="padding: 6px; border-radius: 5px; background-color: #0E1117; color: #FAFAFA; border: 1px solid #333; margin-bottom: 5px; font-family: sans-serif; font-size: 0.9rem;">
-        <strong>OK:</strong> Stock suficiente
-    </div>
-    """, unsafe_allow_html=True)
+    st.sidebar.markdown("**Niveles de Urgencia**")
+    st.sidebar.markdown(f"<div style='color:{COLOR_ALTA}'>■ <b>ALTA:</b> Rotura en &le; 3 días</div>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"<div style='color:{COLOR_MEDIA}'>■ <b>MEDIA:</b> Rotura en &le; 7 días</div>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"<div style='color:{COLOR_BAJA}'>■ <b>BAJA:</b> Rotura prevista</div>", unsafe_allow_html=True)
 
+    if st.button("Analizar Riesgos de Stock", type="primary", use_container_width=True):
+        # Filtrar
+        df_work = df_stock.copy()
+        if farm_sel != 'Todas': df_work = df_work[df_work['Farmacia_ID'] == farm_sel]
+        
+        # Cruce para categoría
+        prods_cat = df_total[['Producto', 'Categoria']].drop_duplicates()
+        df_work = df_work.merge(prods_cat, on='Producto')
+        df_work = df_work[df_work['Categoria'] == cat_sel]
 
-    if st.button("Generar Reporte de Priorización", type="primary", use_container_width=True):
-        df_a_revisar = df_stock_actual.copy()
-        if farmacia_sel != 'Todas':
-            df_a_revisar = df_a_revisar[df_a_revisar['Farmacia_ID'] == farmacia_sel]
-        df_a_revisar = df_a_revisar.merge(df_total[['Producto', 'Categoria']].drop_duplicates(), on='Producto', how='left')
-        if cat_sel != 'Todas':
-            df_a_revisar = df_a_revisar[df_a_revisar['Categoria'] == cat_sel]
-
-        if df_a_revisar.empty:
-            st.warning("No hay productos/farmacias que coincidan con los filtros.")
+        if df_work.empty:
+            st.warning("No hay productos para analizar con estos filtros.")
         else:
+            # Lógica Principal
             fecha_max_hist = df_total['Fecha'].max()
-            modelos_cargados = datos_modelos['modelos']
+            modelos = datos_modelos['modelos']
             resultados = []
-            barra_progreso = st.progress(0, text="Iniciando análisis de priorización...")
-            total_productos = len(df_a_revisar)
             
-            modelos_sin_datos_count = 0
+            progreso = st.progress(0, text="Iniciando IA...")
             
-            for i, row in enumerate(df_a_revisar.itertuples()):
-                farmacia_id = row.Farmacia_ID
-                producto = row.Producto
-                stock_actual = row.Stock_Actual
-                barra_progreso.progress((i+1)/total_productos, text=f"Priorizando: {producto} en {farmacia_id}...")
+            for i, row in enumerate(df_work.itertuples()):
+                progreso.progress((i+1)/len(df_work), text=f"Analizando: {row.Producto}...")
                 
-                clave_modelo = f"{farmacia_id}::{producto}"
-                info_modelo = modelos_cargados.get(clave_modelo)
+                key = f"{row.Farmacia_ID}::{row.Producto}"
+                modelo_info = modelos.get(key)
                 
-                if info_modelo is None:
-                    modelos_sin_datos_count += 1
-                    continue 
+                if not modelo_info: continue
                 
-                modelo = info_modelo['model']
-                df_historico_producto = df_total[
-                    (df_total['Farmacia_ID'] == farmacia_id) &
-                    (df_total['Producto'] == producto)
+                # Obtener historial específico para las features recursivas
+                df_hist_prod = df_total[
+                    (df_total['Farmacia_ID'] == row.Farmacia_ID) & 
+                    (df_total['Producto'] == row.Producto)
                 ]
                 
-                # --- ¡CORRECCIÓN! Pasar 'df_clima' a la función ---
-                predicciones_diarias = generar_pronostico_avanzado(modelo, df_historico_producto, df_clima, dias_a_pronosticar, fecha_max_hist)
-                demanda_predicha_total = predicciones_diarias.sum()
+                # Predicción Recursiva
+                preds = predecir_demanda_futura(modelo_info['model'], df_hist_prod, df_clima, dias_horizonte, fecha_max_hist)
+                demanda_total = preds.sum()
                 
-                stock_seguridad_unidades = demanda_predicha_total * (stock_seguridad_pct / 100)
-                stock_util = stock_actual - stock_seguridad_unidades
+                # Cálculo de Rotura
+                stock_seg = demanda_total * (stock_seguridad_pct/100)
+                stock_util = row.Stock_Actual - stock_seg
                 
-                stock_restante = stock_util
-                dias_hasta_rotura = "OK"
+                dias_rotura = "OK"
+                stock_temp = stock_util
+                for d, venta_dia in enumerate(preds):
+                    stock_temp -= venta_dia
+                    if stock_temp <= 0:
+                        dias_rotura = d + 1
+                        break
                 
-                for dia, demanda_dia in enumerate(predicciones_diarias):
-                    stock_restante -= demanda_dia
-                    if stock_restante <= 0:
-                        dias_hasta_rotura = f"{dia + 1} días"
-                        break 
+                # Prioridad
+                prioridad = "OK"
+                if dias_rotura != "OK":
+                    if dias_rotura <= 3: prioridad = "Alta"
+                    elif dias_rotura <= 7: prioridad = "Media"
+                    else: prioridad = "Baja"
                 
-                if dias_hasta_rotura == "OK":
-                    prioridad = "OK"
-                else:
-                    num_dias = int(dias_hasta_rotura.split(" ")[0])
-                    if num_dias <= PRIORIDAD_ALTA_DIAS:
-                        prioridad = "Alta"
-                    elif num_dias <= PRIORIDAD_MEDIA_DIAS:
-                        prioridad = "Media"
-                    else:
-                        prioridad = "Baja"
-                
-                resultados.append({
-                    "Farmacia": farmacia_id, "Producto": producto, "Prioridad": prioridad,
-                    "Días hasta Rotura": dias_hasta_rotura, "Stock Actual": stock_actual,
-                    "Stock de Seguridad": int(stock_seguridad_unidades), "Stock Útil": int(stock_util),
-                    f"Demanda Predicha ({dias_a_pronosticar} días)": demanda_predicha_total,
-                })
+                if prioridad != "OK":
+                    resultados.append({
+                        "Farmacia": row.Farmacia_ID,
+                        "Producto": row.Producto,
+                        "Prioridad": prioridad,
+                        "Días hasta Rotura": dias_rotura,
+                        "Stock Actual": row.Stock_Actual,
+                        "Stock Útil": int(stock_util),
+                        "Demanda Prevista": int(demanda_total),
+                        "RMSE Modelo": f"{modelo_info['rmse']:.1f}"
+                    })
             
-            barra_progreso.empty() 
-            st.success("¡Análisis de priorización completado!")
+            progreso.empty()
             
-            if modelos_sin_datos_count > 0:
-                st.info(f"{modelos_sin_datos_count} productos fueron omitidos del reporte por no tener suficientes datos históricos para un modelo de IA.")
-            
-            df_resultados = pd.DataFrame(resultados)
-            
-            if df_resultados.empty:
-                st.warning("No se generaron resultados de alerta para los filtros seleccionados (excluyendo productos sin datos).")
+            if not resultados:
+                st.success("¡Todo en orden! No se detectan riesgos de rotura en el horizonte seleccionado.")
             else:
-                columnas_resumen = ["Farmacia", "Producto", "Prioridad", "Días hasta Rotura"]
-                df_resumen = df_resultados[columnas_resumen]
+                df_res = pd.DataFrame(resultados)
                 
-                columnas_detalle = [
-                    "Farmacia", "Producto", "Prioridad", "Días hasta Rotura", 
-                    "Stock Actual", "Stock de Seguridad", "Stock Útil", 
-                    f"Demanda Predicha ({dias_a_pronosticar} días)"
-                ]
-                df_detalle = df_resultados[columnas_detalle]
+                # Estilos
+                def color_row(row):
+                    c = ""
+                    if row['Prioridad'] == "Alta": c = COLOR_ALTA
+                    elif row['Prioridad'] == "Media": c = COLOR_MEDIA
+                    elif row['Prioridad'] == "Baja": c = COLOR_BAJA
+                    return [f'background-color: {c}; color: white'] * len(row)
                 
-                def estilizar_prioridad(fila):
-                    color = ""
-                    if fila.Prioridad == "Alta": color = COLOR_ALTA
-                    elif fila.Prioridad == "Media": color = COLOR_MEDIA
-                    elif fila.Prioridad == "Baja": color = COLOR_BAJA
-                    
-                    if color:
-                        return [f'background-color: {color}; color: white'] * len(fila)
-                    else:
-                        return [''] * len(fila)
+                st.subheader("Alertas Detectadas")
+                st.dataframe(df_res.style.apply(color_row, axis=1), use_container_width=True)
+                
+                st.download_button("Descargar Alertas (CSV)", convert_df_to_csv(df_res), "alertas.csv", "text/csv")
 
-                st.header("Lista de Prioridades (Resumen)")
-                st.dataframe(df_resumen.style.apply(estilizar_prioridad, axis=1), use_container_width=True)
-                
-                with st.expander("Ver cálculos y detalles completos"):
-                    st.dataframe(df_detalle, use_container_width=True)
-                
-                csv_data = convert_df_to_csv(df_detalle)
-                st.download_button(
-                    label="Descargar Reporte Detallado en CSV",
-                    data=csv_data,
-                    file_name=f"reporte_priorizacion_detallado.csv",
-                    mime='text/csv',
-                    use_container_width=True
-                )
 else:
-    st.error("Error al cargar los datos. Revisa el archivo CSV y asegúrate de haber ejecutado 'train_models.py'.")
+    st.error("Error cargando datos iniciales.")

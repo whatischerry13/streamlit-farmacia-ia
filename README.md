@@ -2,7 +2,7 @@
 
 Un dashboard de Business Intelligence y Machine Learning de nivel profesional construido con Streamlit y Python, diseñado como proyecto de portfolio.
 
-**[Ver la App en Vivo](https://app-farmacia-ia-portfolio.streamlit.app/)** _<-- ¡Reemplaza este enlace cuando lo despliegues!_
+**[Ver la App en Vivo](https://app-farmacia-ia-portfolio.streamlit.app/)**
 
 ---
 
@@ -62,7 +62,7 @@ Este dashboard multi-página incluye 9 módulos analíticos:
     ```
 4.  **Ejecutar la aplicación Streamlit:**
     ```bash
-    streamlit run 1_🏠_Bienvenida.py
+    streamlit run 1_Bienvenida.py
     ```
     La aplicación se abrirá en tu navegador web.
 
@@ -74,6 +74,3 @@ Este dashboard multi-página incluye 9 módulos analíticos:
 
 * **LinkedIn:** [https://www.linkedin.com/in/alberto-tejero-castro-a7847a294/]
 
-
-_Este proyecto es una demostración de mis habilidades y está construido con datos simulados._"# streamlit-farmacia-ia" 
-"# streamlit-farmacia-ia" 
