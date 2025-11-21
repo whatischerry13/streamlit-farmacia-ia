@@ -12,10 +12,9 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 st.set_page_config(page_title="Alerta de Stock (IA)", layout="wide")
 
 # --- Colores ---
-COLOR_ALTA = "#DA3434"
-COLOR_MEDIA = "#B9770E"
-COLOR_BAJA = "#4682B4"
-COLOR_OK = "#2E8B57"
+COLOR_ALTA = "#E62222"
+COLOR_MEDIA = "#DAA755"
+COLOR_BAJA = "#64A7DD"
 
 # --- Funciones de Carga ---
 @st.cache_data
@@ -57,16 +56,14 @@ def simular_stock_actual(_df_total):
     df_grp['Stock_Actual'] = (df_grp['Cantidad'] * np.random.randint(3, 20, size=len(df_grp))).astype(int)
     return df_grp[['Farmacia_ID', 'Producto', 'Stock_Actual']]
 
-# --- LÓGICA DE PREDICCIÓN PREMIUM (RECURSIVA 16 FEATURES) ---
-# Esta función debe ser idéntica en lógica a la de train_models.py
+# --- LÓGICA DE PREDICCIÓN PREMIUM (RECURSIVA - 16 FEATURES) ---
+# Esta función es la CLAVE para arreglar el error. Genera las mismas 16 columnas que el entrenamiento.
 
 def crear_features_un_paso(historia_y, fecha_obj, df_clima):
-    """Genera las 16 features premium para un solo día futuro."""
     row = pd.DataFrame({'ds': [pd.to_datetime(fecha_obj)]})
     
     # 1. Ciclos Temporales
-    mes = fecha_obj.month
-    dia_sem = fecha_obj.weekday()
+    mes = fecha_obj.month; dia_sem = fecha_obj.weekday()
     row['mes_sin'] = np.sin(2 * np.pi * mes / 12)
     row['mes_cos'] = np.cos(2 * np.pi * mes / 12)
     row['dia_semana_sin'] = np.sin(2 * np.pi * dia_sem / 7)
@@ -87,7 +84,7 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     
     # 4. Lags y Rolling (Usando el historial acumulado)
     vals = historia_y
-    # Si no hay suficientes datos, rellenamos con 0 (o la media si quisieramos ser más precisos)
+    # Aseguramos tener datos suficientes, sino 0
     row['lag_1'] = vals[-1] if len(vals) >= 1 else 0
     row['lag_2'] = vals[-2] if len(vals) >= 2 else 0
     row['lag_7'] = vals[-7] if len(vals) >= 7 else 0
@@ -98,8 +95,9 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     row['roll_std_7'] = pd.Series(vals).rolling(7).std().iloc[-1] if len(vals)>=7 else 0
     
     # Tendencia
-    rm7_prev = pd.Series(vals).rolling(7).mean().iloc[-8] if len(vals)>=8 else row['roll_mean_7'].values[0]
-    row['tendencia_semanal'] = row['roll_mean_7'] - rm7_prev
+    rm7 = row['roll_mean_7'].values[0]
+    rm7_prev = pd.Series(vals).rolling(7).mean().iloc[-8] if len(vals)>=8 else rm7
+    row['tendencia_semanal'] = rm7 - rm7_prev
     
     # Orden exacto de columnas que espera el modelo (16 features)
     cols = ['mes_sin', 'mes_cos', 'dia_semana_sin', 'dia_semana_cos', 
@@ -117,13 +115,12 @@ def predecir_demanda_futura(modelo, df_hist_prod, df_clima, dias_futuros, fecha_
     for i in range(dias_futuros):
         fecha_futura = fecha_max + timedelta(days=i+1)
         
-        # Crear features para mañana usando la historia (que incluye predicciones pasadas)
+        # Crear features para mañana usando la historia
         X_test = crear_features_un_paso(historia, fecha_futura, df_clima)
         
         # Predecir
         y_pred = max(0, modelo.predict(X_test)[0])
         
-        # Guardar y actualizar historia para el siguiente ciclo (recursividad)
         predicciones.append(y_pred)
         historia.append(y_pred)
         
@@ -161,9 +158,9 @@ if df_total is not None and datos_modelos is not None:
     # Leyenda
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Niveles de Urgencia**")
-    st.sidebar.markdown(f"<div style='color:{COLOR_ALTA}'>■ <b>ALTA:</b> Rotura en &le; 3 días</div>", unsafe_allow_html=True)
-    st.sidebar.markdown(f"<div style='color:{COLOR_MEDIA}'>■ <b>MEDIA:</b> Rotura en &le; 7 días</div>", unsafe_allow_html=True)
-    st.sidebar.markdown(f"<div style='color:{COLOR_BAJA}'>■ <b>BAJA:</b> Rotura prevista</div>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"<div style='padding:5px; background-color:{COLOR_ALTA}; color:white; border-radius:5px; margin-bottom:5px; font-size:0.9rem;'>ALTA: Rotura en &le; 3 días</div>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"<div style='padding:5px; background-color:{COLOR_MEDIA}; color:white; border-radius:5px; margin-bottom:5px; font-size:0.9rem;'>MEDIA: Rotura en &le; 7 días</div>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"<div style='padding:5px; background-color:{COLOR_BAJA}; color:white; border-radius:5px; margin-bottom:5px; font-size:0.9rem;'>BAJA: Rotura prevista</div>", unsafe_allow_html=True)
 
     if st.button("Analizar Riesgos de Stock", type="primary", use_container_width=True):
         # Filtrar
@@ -183,22 +180,26 @@ if df_total is not None and datos_modelos is not None:
             resultados = []
             
             progreso = st.progress(0, text="Iniciando IA...")
-            
+            total_items = len(df_work)
+            omitted_count = 0
+
             for i, row in enumerate(df_work.itertuples()):
-                progreso.progress((i+1)/len(df_work), text=f"Analizando: {row.Producto}...")
+                progreso.progress((i+1)/total_items, text=f"Analizando: {row.Producto}...")
                 
                 key = f"{row.Farmacia_ID}::{row.Producto}"
                 model_info = modelos.get(key)
                 
-                if not model_info: continue
+                if not model_info:
+                    omitted_count += 1
+                    continue
                 
-                # Obtener historial específico para las features recursivas
+                # Historial específico para recursión
                 df_hist_prod = df_total[
                     (df_total['Farmacia_ID'] == row.Farmacia_ID) & 
                     (df_total['Producto'] == row.Producto)
                 ]
                 
-                # Predicción Recursiva (AQUÍ ES DONDE SE LLAMA A LA NUEVA LÓGICA)
+                # --- PREDICCIÓN RECURSIVA (PREMIUM) ---
                 preds = predecir_demanda_futura(model_info['model'], df_hist_prod, df_clima, dias_horizonte, fecha_max_hist)
                 demanda_total = preds.sum()
                 
@@ -211,46 +212,58 @@ if df_total is not None and datos_modelos is not None:
                 for d, venta_dia in enumerate(preds):
                     stock_temp -= venta_dia
                     if stock_temp <= 0:
-                        dias_rotura = d + 1
+                        dias_rotura = f"{d + 1} días"
                         break
                 
-                # Prioridad
                 prioridad = "OK"
                 if dias_rotura != "OK":
-                    if dias_rotura <= 3: prioridad = "Alta"
-                    elif dias_rotura <= 7: prioridad = "Media"
+                    d_num = int(dias_rotura.split()[0])
+                    if d_num <= 3: prioridad = "Alta"
+                    elif d_num <= 7: prioridad = "Media"
                     else: prioridad = "Baja"
                 
-                if prioridad != "OK":
-                    resultados.append({
-                        "Farmacia": row.Farmacia_ID,
-                        "Producto": row.Producto,
-                        "Prioridad": prioridad,
-                        "Días hasta Rotura": dias_rotura,
-                        "Stock Actual": row.Stock_Actual,
-                        "Stock Útil": int(stock_util),
-                        "Demanda Prevista": int(demanda_total),
-                        "RMSE Modelo": f"{model_info['rmse']:.1f}"
-                    })
+                # Añadimos todos a la tabla de detalle
+                resultados.append({
+                    "Farmacia": row.Farmacia_ID,
+                    "Producto": row.Producto,
+                    "Prioridad": prioridad,
+                    "Días hasta Rotura": dias_rotura,
+                    "Stock Actual": row.Stock_Actual,
+                    "Stock Útil": int(stock_util),
+                    "Demanda Prevista": int(demanda_total),
+                    "RMSE Modelo": f"{model_info['rmse']:.1f}"
+                })
             
             progreso.empty()
             
+            if omitted_count > 0:
+                st.info(f"Nota: {omitted_count} productos omitidos por falta de datos históricos suficientes.")
+
             if not resultados:
-                st.success("✅ ¡Todo en orden! No se detectan riesgos de rotura en el horizonte seleccionado.")
+                st.warning("No hay resultados para mostrar.")
             else:
                 df_res = pd.DataFrame(resultados)
                 
-                # Estilos
+                # Tabla Resumen (Solo columnas clave)
+                df_view = df_res[["Farmacia", "Producto", "Prioridad", "Días hasta Rotura"]]
+                
                 def color_row(row):
                     c = ""
                     if row['Prioridad'] == "Alta": c = COLOR_ALTA
                     elif row['Prioridad'] == "Media": c = COLOR_MEDIA
                     elif row['Prioridad'] == "Baja": c = COLOR_BAJA
-                    return [f'background-color: {c}; color: white'] * len(row)
+                    
+                    if c:
+                        return [f'background-color: {c}; color: white'] * len(row)
+                    else:
+                        return [''] * len(row)
                 
-                st.subheader("⚠️ Alertas Detectadas")
-                st.dataframe(df_res.style.apply(color_row, axis=1), use_container_width=True)
+                st.subheader("Resumen de Prioridades")
+                st.dataframe(df_view.style.apply(color_row, axis=1), use_container_width=True)
                 
+                with st.expander("Ver Detalles Completos"):
+                    st.dataframe(df_res, use_container_width=True)
+
                 st.download_button("Descargar Alertas (CSV)", convert_df_to_csv(df_res), "alertas.csv", "text/csv")
 
 else:
