@@ -12,10 +12,10 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 st.set_page_config(page_title="Alerta de Stock (IA)", layout="wide")
 
 # --- Colores ---
-COLOR_ALTA = "#692424"
-COLOR_MEDIA = "#E4B261"
-COLOR_BAJA = "#68A2D1"
-COLOR_OK = "#48A16F"
+COLOR_ALTA = "#DA3434"
+COLOR_MEDIA = "#B9770E"
+COLOR_BAJA = "#4682B4"
+COLOR_OK = "#2E8B57"
 
 # --- Funciones de Carga ---
 @st.cache_data
@@ -53,12 +53,12 @@ def cargar_modelos(file_name='modelos_farmacia.joblib'):
 def simular_stock_actual(_df_total):
     st.info("Sincronizando inventario en tiempo real... (Simulado)")
     df_grp = _df_total.groupby(['Farmacia_ID', 'Producto'])['Cantidad'].mean().reset_index()
-    np.random.seed(123) # Semilla fija para demo
-    # Stock aleatorio entre 3 y 20 días de venta media
+    np.random.seed(123)
     df_grp['Stock_Actual'] = (df_grp['Cantidad'] * np.random.randint(3, 20, size=len(df_grp))).astype(int)
     return df_grp[['Farmacia_ID', 'Producto', 'Stock_Actual']]
 
-# --- LÓGICA DE PREDICCIÓN PREMIUM (RECURSIVA) ---
+# --- LÓGICA DE PREDICCIÓN PREMIUM (RECURSIVA 16 FEATURES) ---
+# Esta función debe ser idéntica en lógica a la de train_models.py
 
 def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     """Genera las 16 features premium para un solo día futuro."""
@@ -86,8 +86,8 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     row['Temperatura_Media'] = t_media
     
     # 4. Lags y Rolling (Usando el historial acumulado)
-    # Aseguramos tener datos suficientes, sino 0
     vals = historia_y
+    # Si no hay suficientes datos, rellenamos con 0 (o la media si quisieramos ser más precisos)
     row['lag_1'] = vals[-1] if len(vals) >= 1 else 0
     row['lag_2'] = vals[-2] if len(vals) >= 2 else 0
     row['lag_7'] = vals[-7] if len(vals) >= 7 else 0
@@ -97,11 +97,11 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     row['roll_mean_28'] = pd.Series(vals).rolling(28).mean().iloc[-1] if len(vals)>=28 else 0
     row['roll_std_7'] = pd.Series(vals).rolling(7).std().iloc[-1] if len(vals)>=7 else 0
     
-    # Tendencia (Media 7 hoy - Media 7 hace una semana)
+    # Tendencia
     rm7_prev = pd.Series(vals).rolling(7).mean().iloc[-8] if len(vals)>=8 else row['roll_mean_7'].values[0]
     row['tendencia_semanal'] = row['roll_mean_7'] - rm7_prev
     
-    # Orden exacto de columnas que espera el modelo
+    # Orden exacto de columnas que espera el modelo (16 features)
     cols = ['mes_sin', 'mes_cos', 'dia_semana_sin', 'dia_semana_cos', 
             'es_festivo', 'temp_gripe', 'temp_alergia', 'Temperatura_Media',
             'lag_1', 'lag_2', 'lag_7', 'lag_14',
@@ -110,6 +110,7 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
 
 def predecir_demanda_futura(modelo, df_hist_prod, df_clima, dias_futuros, fecha_max):
     """Bucle que predice día a día alimentándose a sí mismo."""
+    # Extraemos la serie de cantidad histórica
     historia = list(df_hist_prod.sort_values('Fecha')['Cantidad'].values)
     predicciones = []
     
@@ -122,14 +123,14 @@ def predecir_demanda_futura(modelo, df_hist_prod, df_clima, dias_futuros, fecha_
         # Predecir
         y_pred = max(0, modelo.predict(X_test)[0])
         
-        # Guardar y actualizar historia
+        # Guardar y actualizar historia para el siguiente ciclo (recursividad)
         predicciones.append(y_pred)
         historia.append(y_pred)
         
     return np.array(predicciones)
 
 # --- INTERFAZ ---
-st.title("Sistema de Alerta de Stock con IA")
+st.title("Sistema de Alerta de Stock (IA Premium)")
 st.info("""
 **Herramienta de Priorización Inteligente**
 Utiliza modelos XGBoost optimizados con variables climáticas y de tendencia para predecir el agotamiento de stock.
@@ -146,12 +147,12 @@ if df_total is not None and datos_modelos is not None:
     # Sidebar
     st.sidebar.header("Configuración")
     lista_farmacias = ['Todas'] + sorted(list(df_total['Farmacia_ID'].unique()))
-    farm_sel = st.sidebar.selectbox("Farmacia:", lista_farmacias)
+    farm_sel = st.sidebar.selectbox("Farmacia:", lista_farmacias, key='alerta_farm')
     
     lista_cats = sorted(list(df_total['Categoria'].unique()))
     try: idx_cat = lista_cats.index('Antigripal')
     except: idx_cat = 0
-    cat_sel = st.sidebar.selectbox("Categoría:", lista_cats, index=idx_cat)
+    cat_sel = st.sidebar.selectbox("Categoría:", lista_cats, index=idx_cat, key='alerta_cat')
     
     st.sidebar.divider()
     dias_horizonte = st.sidebar.slider("Horizonte de Análisis (Días):", 7, 30, 14)
@@ -169,7 +170,6 @@ if df_total is not None and datos_modelos is not None:
         df_work = df_stock.copy()
         if farm_sel != 'Todas': df_work = df_work[df_work['Farmacia_ID'] == farm_sel]
         
-        # Cruce para categoría
         prods_cat = df_total[['Producto', 'Categoria']].drop_duplicates()
         df_work = df_work.merge(prods_cat, on='Producto')
         df_work = df_work[df_work['Categoria'] == cat_sel]
@@ -188,9 +188,9 @@ if df_total is not None and datos_modelos is not None:
                 progreso.progress((i+1)/len(df_work), text=f"Analizando: {row.Producto}...")
                 
                 key = f"{row.Farmacia_ID}::{row.Producto}"
-                modelo_info = modelos.get(key)
+                model_info = modelos.get(key)
                 
-                if not modelo_info: continue
+                if not model_info: continue
                 
                 # Obtener historial específico para las features recursivas
                 df_hist_prod = df_total[
@@ -198,8 +198,8 @@ if df_total is not None and datos_modelos is not None:
                     (df_total['Producto'] == row.Producto)
                 ]
                 
-                # Predicción Recursiva
-                preds = predecir_demanda_futura(modelo_info['model'], df_hist_prod, df_clima, dias_horizonte, fecha_max_hist)
+                # Predicción Recursiva (AQUÍ ES DONDE SE LLAMA A LA NUEVA LÓGICA)
+                preds = predecir_demanda_futura(model_info['model'], df_hist_prod, df_clima, dias_horizonte, fecha_max_hist)
                 demanda_total = preds.sum()
                 
                 # Cálculo de Rotura
@@ -230,13 +230,13 @@ if df_total is not None and datos_modelos is not None:
                         "Stock Actual": row.Stock_Actual,
                         "Stock Útil": int(stock_util),
                         "Demanda Prevista": int(demanda_total),
-                        "RMSE Modelo": f"{modelo_info['rmse']:.1f}"
+                        "RMSE Modelo": f"{model_info['rmse']:.1f}"
                     })
             
             progreso.empty()
             
             if not resultados:
-                st.success("¡Todo en orden! No se detectan riesgos de rotura en el horizonte seleccionado.")
+                st.success("✅ ¡Todo en orden! No se detectan riesgos de rotura en el horizonte seleccionado.")
             else:
                 df_res = pd.DataFrame(resultados)
                 
@@ -248,7 +248,7 @@ if df_total is not None and datos_modelos is not None:
                     elif row['Prioridad'] == "Baja": c = COLOR_BAJA
                     return [f'background-color: {c}; color: white'] * len(row)
                 
-                st.subheader("Alertas Detectadas")
+                st.subheader("⚠️ Alertas Detectadas")
                 st.dataframe(df_res.style.apply(color_row, axis=1), use_container_width=True)
                 
                 st.download_button("Descargar Alertas (CSV)", convert_df_to_csv(df_res), "alertas.csv", "text/csv")

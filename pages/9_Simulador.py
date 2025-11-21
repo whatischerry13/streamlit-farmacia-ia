@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-# --- 1. Configuración de Página
+# --- 1. Configuración de Página (Sin Emojis) ---
 st.set_page_config(page_title="Simulador de Escenarios", layout="wide")
 
 # --- 2. Función de Descarga ---
@@ -63,15 +63,9 @@ def cargar_modelos(file_name='modelos_farmacia.joblib'):
         st.info("Por favor, ejecuta el script 'train_models.py' en tu terminal.")
         return None
 
-# --- LÓGICA DE PREDICCIÓN 
+# --- LÓGICA DE PREDICCIÓN PREMIUM (RECURSIVA) ---
 
-def simular_festivos(df_fechas):
-    """Simula días festivos para los datos de predicción."""
-    # Esta función auxiliar ya no es estrictamente necesaria dentro de 'crear_features_un_paso'
-    # porque calculamos los festivos directamente allí, pero la dejo por compatibilidad.
-    return df_fechas
-
-# 2. Generador de Features paso a paso (Coincide con el modelo Premium)
+# Generador de Features paso a paso (Coincide con el modelo Premium)
 def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     """Genera las 16 features premium para un solo día futuro."""
     row = pd.DataFrame({'ds': [pd.to_datetime(fecha_obj)]})
@@ -99,6 +93,7 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     
     # D. Lags y Rolling (Usando el historial acumulado)
     vals = historia_y
+    # Si no hay suficientes datos, rellenamos con 0
     row['lag_1'] = vals[-1] if len(vals) >= 1 else 0
     row['lag_2'] = vals[-2] if len(vals) >= 2 else 0
     row['lag_7'] = vals[-7] if len(vals) >= 7 else 0
@@ -134,7 +129,7 @@ def predecir_recursivo(model, df_hist_prod, df_clima, dias_futuros, fecha_max):
         # Predecir
         y_pred = max(0, model.predict(X_test)[0])
         
-        # Guardar y actualizar historia para el siguiente ciclo del bucle
+        # Guardar y actualizar historia para el siguiente ciclo (recursividad)
         predicciones.append(y_pred)
         historia.append(y_pred)
         
@@ -146,7 +141,7 @@ st.info("""
 **Herramienta de Análisis Prescriptivo**
 Permite simular el impacto de eventos de negocio (como campañas de marketing) sobre el inventario antes de que ocurran. 
 Responde a preguntas como: "¿Qué pasaría si lanzo una campaña 2x1 y la demanda de antigripales sube un 50%? ¿Qué farmacias se quedarían sin stock y cuándo?"
-""")
+""") # Icono eliminado para limpieza total
 
 df_total = cargar_datos()
 datos_modelos = cargar_modelos()
@@ -230,17 +225,19 @@ if df_total is not None and datos_modelos is not None:
                 clave_modelo = f"{farmacia_id}::{producto}"
                 info_modelo = modelos_cargados.get(clave_modelo)
                 
-                if info_modelo is None: continue 
+                if info_modelo is None:
+                    continue 
                 
                 modelo = info_modelo['model']
                 
                 # Obtener historial específico para la recursión
                 df_hist_prod = df_total[
-                    (df_total['Farmacia_ID'] == farmacia_id) &
+                    (df_total['Farmacia_ID'] == farmacia_id) & 
                     (df_total['Producto'] == producto)
                 ]
                 
-                # --- PREDICCIÓN RECURSIVA 
+                # --- PREDICCIÓN RECURSIVA (PREMIUM) ---
+                # Usamos la función correcta que coincide con el modelo entrenado
                 predicciones_diarias = predecir_recursivo(modelo, df_hist_prod, df_clima, dias_a_pronosticar, fecha_max_hist)
                 
                 # Aplicar Ajuste del Simulador
@@ -318,7 +315,7 @@ if df_total is not None and datos_modelos is not None:
             
             st.divider()
 
-            st.subheader("Proyección de Agotamiento de Stock (Top 5 en Riesgo)")
+            st.subheader(f"Proyección de Agotamiento de Stock (Top 5 en Riesgo)")
             
             if not df_grafico_list:
                 st.success("¡Buenas noticias! El inventario soporta este escenario sin roturas.")
@@ -334,7 +331,6 @@ if df_total is not None and datos_modelos is not None:
 
                 df_grafico_final = df_grafico_final[df_grafico_final['Producto_Farmacia'].isin(top_5)]
                 
-                # Gráfico
                 regla_cero = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(color='red', strokeDash=[5,5]).encode(y='y')
                 
                 line_chart = alt.Chart(df_grafico_final).mark_line(point=True).encode(
@@ -348,12 +344,12 @@ if df_total is not None and datos_modelos is not None:
                 
                 st.info("""
                 **Cómo leer este gráfico:**
-                * Muestra el agotamiento del **"Stock Útil"** día a día.
+                * Este gráfico muestra cómo se agota el **"Stock Útil"** (Stock Actual - Stock de Seguridad) día a día.
                 * La **línea roja (0)** indica rotura de stock.
                 * El cruce de una línea con el 0 indica el día exacto del agotamiento.
                 """)
 
-            st.subheader("Resumen de Impacto")
+            st.subheader("Resumen de Impacto por Producto")
             
             df_resultados = pd.DataFrame(resultados_tabla)
             
@@ -363,7 +359,7 @@ if df_total is not None and datos_modelos is not None:
             
             def estilo_riesgo(fila):
                 if fila["Días hasta Rotura"] != "OK":
-                    return [f'background-color: #8B0000; color: white'] * len(fila) # Rojo oscuro profesional
+                    return [f'background-color: #9B2B2B; color: white'] * len(fila) # Rojo oscuro profesional
                 else:
                     return [''] * len(fila)
 
@@ -381,4 +377,4 @@ if df_total is not None and datos_modelos is not None:
                 use_container_width=True
             )
 else:
-    st.error("Error al cargar datos. Revisa que 'train_models.py' se haya ejecutado correctamente.")
+    st.error("Error al cargar los datos. Revisa el archivo CSV y asegúrate de haber ejecutado 'train_models.py'.")
