@@ -9,6 +9,7 @@ import holidays
 from datetime import datetime, timedelta
 from statsmodels.tsa.seasonal import seasonal_decompose
 
+# Configuración
 warnings.simplefilter(action='ignore', category=FutureWarning)
 st.set_page_config(page_title="Resumen General", layout="wide")
 
@@ -82,7 +83,7 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     rm7_prev = pd.Series(vals).rolling(7).mean().iloc[-8] if len(vals)>=8 else rm7
     row['tendencia_semanal'] = rm7 - rm7_prev
     
-    # Orden EXACTO
+    # Orden EXACTO del modelo Premium
     cols = ['mes_sin', 'mes_cos', 'dia_semana_sin', 'dia_semana_cos', 
             'es_festivo', 'temp_gripe', 'temp_alergia', 'Temperatura_Media',
             'lag_1', 'lag_2', 'lag_7', 'lag_14',
@@ -90,7 +91,9 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     return row[cols]
 
 def predecir_recursivo(model, df_hist_prod, df_clima, dias_futuros):
+    # Última fecha conocida
     ult_fecha = df_hist_prod['Fecha'].max()
+    # Historial ordenado
     historia = list(df_hist_prod.sort_values('Fecha')['Cantidad'].values)
     
     predicciones = []
@@ -139,7 +142,9 @@ if df_total is not None:
         st.subheader("Descomposición de Serie Temporal")
         prods = sorted(df_fil['Producto'].unique())
         if prods:
-            p_sel = st.selectbox("Producto:", prods)
+            # --- ARREGLO 1: Añadimos key única ---
+            p_sel = st.selectbox("Producto:", prods, key='decomp_product')
+            
             df_p = df_fil[df_fil['Producto'] == p_sel].groupby('Fecha')['Cantidad'].sum()
             df_p.index = pd.to_datetime(df_p.index)
             df_p = df_p.asfreq('D').fillna(0)
@@ -147,16 +152,17 @@ if df_total is not None:
             if len(df_p) > 365*2:
                 res = seasonal_decompose(df_p, model='additive', period=365)
                 st.line_chart(res.trend, height=200)
-                st.caption("Tendencia")
+                st.caption("Tendencia a largo plazo")
                 st.line_chart(res.seasonal.iloc[:365], height=200)
-                st.caption("Estacionalidad (1 año)")
+                st.caption("Patrón Estacional (Zoom 1 año)")
             else:
                 st.warning("Datos insuficientes para descomposición.")
 
     with tab3:
         st.header("Motor de IA Premium")
         c_prod, c_dias = st.columns(2)
-        prod = c_prod.selectbox("Producto:", sorted(df_total['Producto'].unique()))
+        # --- ARREGLO 2: Añadimos key única ---
+        prod = c_prod.selectbox("Producto:", sorted(df_total['Producto'].unique()), key='forecast_product')
         dias = c_dias.slider("Días a predecir:", 7, 90, 30)
         
         if st.button("Generar Pronóstico", type="primary"):
@@ -169,7 +175,6 @@ if df_total is not None:
                     with st.spinner("Calculando predicción día a día..."):
                         df_hist = df_total[(df_total['Producto']==prod) & (df_total['Farmacia_ID']==farm_ref)]
                         
-                        # Usamos la función correcta
                         df_fut = predecir_recursivo(model_info['model'], df_hist, df_clima, dias)
                         
                         st.success("Pronóstico Generado")
