@@ -9,7 +9,6 @@ import holidays
 from datetime import datetime, timedelta
 from statsmodels.tsa.seasonal import seasonal_decompose
 
-# Configuración
 warnings.simplefilter(action='ignore', category=FutureWarning)
 st.set_page_config(page_title="Resumen General", layout="wide")
 
@@ -42,33 +41,27 @@ def cargar_modelos(file_name='modelos_farmacia.joblib'):
         st.error(f"Error: No se encuentra {file_name}")
         return None
 
-# --- LÓGICA DE PREDICCIÓN PREMIUM (RECURSIVA 16 FEATURES) ---
-
+# --- LÓGICA DE PREDICCIÓN PREMIUM ---
 def crear_features_un_paso(historia_y, fecha_obj, df_clima):
-    """Genera las 16 features premium para un solo día futuro."""
     row = pd.DataFrame({'ds': [pd.to_datetime(fecha_obj)]})
     
-    # 1. Ciclos Temporales
     mes = fecha_obj.month; dia_sem = fecha_obj.weekday()
     row['mes_sin'] = np.sin(2 * np.pi * mes / 12)
     row['mes_cos'] = np.cos(2 * np.pi * mes / 12)
     row['dia_semana_sin'] = np.sin(2 * np.pi * dia_sem / 7)
     row['dia_semana_cos'] = np.cos(2 * np.pi * dia_sem / 7)
     
-    # 2. Festivos
     es_holidays = holidays.Spain(years=[fecha_obj.year])
     row['es_festivo'] = int(fecha_obj in es_holidays)
     row['temp_gripe'] = int(mes in [10, 11, 12, 1, 2])
     row['temp_alergia'] = int(mes in [3, 4, 5, 6])
     
-    # 3. Clima
     t_media = 15.0
     if df_clima is not None:
         match = df_clima[df_clima['Fecha'] == fecha_obj]
         if not match.empty: t_media = match.iloc[0]['Temperatura_Media']
     row['Temperatura_Media'] = t_media
     
-    # 4. Lags y Rolling
     vals = historia_y
     row['lag_1'] = vals[-1] if len(vals)>=1 else 0
     row['lag_2'] = vals[-2] if len(vals)>=2 else 0
@@ -83,7 +76,6 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     rm7_prev = pd.Series(vals).rolling(7).mean().iloc[-8] if len(vals)>=8 else rm7
     row['tendencia_semanal'] = rm7 - rm7_prev
     
-    # Orden EXACTO del modelo Premium
     cols = ['mes_sin', 'mes_cos', 'dia_semana_sin', 'dia_semana_cos', 
             'es_festivo', 'temp_gripe', 'temp_alergia', 'Temperatura_Media',
             'lag_1', 'lag_2', 'lag_7', 'lag_14',
@@ -91,9 +83,7 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     return row[cols]
 
 def predecir_recursivo(model, df_hist_prod, df_clima, dias_futuros):
-    # Última fecha conocida
     ult_fecha = df_hist_prod['Fecha'].max()
-    # Historial ordenado
     historia = list(df_hist_prod.sort_values('Fecha')['Cantidad'].values)
     
     predicciones = []
@@ -115,7 +105,6 @@ st.title("Resumen General y Pronóstico de Demanda")
 df_total = cargar_datos(); datos_modelos = cargar_modelos(); df_clima = cargar_clima()
 
 if df_total is not None:
-    # Filtros
     st.sidebar.header("Filtros Globales")
     f_min, f_max = df_total['Fecha'].min(), df_total['Fecha'].max()
     rango = st.sidebar.date_input("Fechas:", [f_min, f_max])
@@ -142,9 +131,7 @@ if df_total is not None:
         st.subheader("Descomposición de Serie Temporal")
         prods = sorted(df_fil['Producto'].unique())
         if prods:
-            # --- ARREGLO 1: Añadimos key única ---
-            p_sel = st.selectbox("Producto:", prods, key='decomp_product')
-            
+            p_sel = st.selectbox("Producto:", prods, key='decomp_prod') # key unica
             df_p = df_fil[df_fil['Producto'] == p_sel].groupby('Fecha')['Cantidad'].sum()
             df_p.index = pd.to_datetime(df_p.index)
             df_p = df_p.asfreq('D').fillna(0)
@@ -161,8 +148,7 @@ if df_total is not None:
     with tab3:
         st.header("Motor de IA Premium")
         c_prod, c_dias = st.columns(2)
-        # --- ARREGLO 2: Añadimos key única ---
-        prod = c_prod.selectbox("Producto:", sorted(df_total['Producto'].unique()), key='forecast_product')
+        prod = c_prod.selectbox("Producto:", sorted(df_total['Producto'].unique()), key='forecast_prod') # key unica
         dias = c_dias.slider("Días a predecir:", 7, 90, 30)
         
         if st.button("Generar Pronóstico", type="primary"):
@@ -187,12 +173,21 @@ if df_total is not None:
                                 x='Importancia', y=alt.Y('Impulsor', sort='-x'), tooltip=['Impulsor', 'Importancia']
                             ).properties(title="Factores de Decisión"), use_container_width=True)
 
+                        # --- CORRECCIÓN DEL ERROR DE TIPOS AQUÍ ---
                         df_hist_plot = df_hist[['Fecha', 'Cantidad']].rename(columns={'Fecha':'ds','Cantidad':'y'})
                         df_hist_plot['Tipo'] = 'Real'
+                        # Convertimos explícitamente a datetime64[ns] para evitar conflicto con date
+                        df_hist_plot['ds'] = pd.to_datetime(df_hist_plot['ds'])
+                        
                         df_fut['y'] = df_fut['Prediccion']; df_fut['Tipo'] = 'Predicción'
+                        # Aseguramos que df_fut['ds'] también es datetime
+                        df_fut['ds'] = pd.to_datetime(df_fut['ds'])
                         
                         min_date = df_fut['ds'].min() - timedelta(days=180)
-                        df_plot = pd.concat([df_hist_plot[pd.to_datetime(df_hist_plot['ds'])>min_date], df_fut])
+                        
+                        # Ahora la comparación es segura (datetime vs datetime)
+                        df_plot = pd.concat([df_hist_plot[df_hist_plot['ds'] > min_date], df_fut])
+                        # ------------------------------------------
                         
                         st.altair_chart(alt.Chart(df_plot).mark_line().encode(
                             x='ds', y='y', color='Tipo', strokeDash='Tipo'
