@@ -51,7 +51,7 @@ st.info("""
 **¿Para qué sirve esto?**
 Esta sección proporciona un análisis geoespacial 3D (usando Pydeck) del rendimiento de las farmacias.
 Permite a los gerentes de zona identificar visualmente las "zonas calientes" de ventas o unidades vendidas, filtrando por categoría y rango de fechas.
-""", icon="ℹ️")
+""")
 
 df_total = cargar_datos()
 if df_total is not None:

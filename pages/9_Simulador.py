@@ -23,7 +23,7 @@ def cargar_datos(file_name='ventas_farmacia_fake.csv'):
     try:
         df = pd.read_csv(file_name, delimiter=';', decimal=',', parse_dates=['Fecha'])
         df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
-        # Renombrar columna de precio para evitar problemas con el símbolo € en iterros
+        # Renombrar columna de precio si es necesario
         if 'Precio_Unitario_€' in df.columns:
             df = df.rename(columns={'Precio_Unitario_€': 'Precio'})
         return df
@@ -83,7 +83,7 @@ def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     row['roll_std_7'] = pd.Series(vals).rolling(7).std().iloc[-1] if len(vals)>=7 else 0
     
     rm7 = row['roll_mean_7'].values[0]
-    rm7_prev = pd.Series(vals).rolling(7).mean().iloc[-8] if len(vals)>=8 else rm7
+    rm7_prev = pd.Series(vals).rolling(7).mean().iloc[-8] if len(vals)>=8 else row['roll_mean_7'].values[0]
     row['tendencia_semanal'] = row['roll_mean_7'] - rm7_prev
     
     cols = ['mes_sin', 'mes_cos', 'dia_semana_sin', 'dia_semana_cos', 
@@ -105,7 +105,7 @@ def predecir_recursivo(model, df_hist_prod, df_clima, dias_futuros, fecha_max):
 
 # --- APP ---
 st.title("Simulador de Escenarios 'What-If'")
-st.info("Análisis Prescriptivo: Simula el impacto de cambios en la demanda sobre el stock futuro.", icon="ℹ️")
+st.info("Análisis Prescriptivo: Simula el impacto de cambios en la demanda sobre el stock futuro.")
 
 df_total = cargar_datos(); df_clima = cargar_clima(); datos_modelos = cargar_modelos()
 
@@ -124,7 +124,10 @@ if df_total is not None and datos_modelos is not None:
         df_work = df_stock.copy()
         if farm_sel != 'Todas': df_work = df_work[df_work['Farmacia_ID'] == farm_sel]
         
-        prods = df_total[['Producto', 'Categoria', 'Precio']].drop_duplicates(subset='Producto')
+        # Usamos la columna 'Precio' si fue renombrada, sino intentamos la original
+        col_precio = 'Precio' if 'Precio' in df_total.columns else 'Precio_Unitario_€'
+        prods = df_total[['Producto', 'Categoria', col_precio]].drop_duplicates(subset='Producto')
+        
         df_work = df_work.merge(prods, on='Producto')
         df_work = df_work[df_work['Categoria'].isin(['Alergia', 'Antigripal'])]
         
@@ -138,15 +141,20 @@ if df_total is not None and datos_modelos is not None:
             modelos = datos_modelos['modelos']
             progreso = st.progress(0, text="Simulando...")
             
-            # Usamos iterrows para evitar problemas de nombres de columna con símbolos
-            for idx, row in df_work.iterrows():
-                progreso.progress((idx+1)/len(df_work))
+            total_items = len(df_work)
+            
+            # --- CORRECCIÓN AQUÍ: Usamos enumerate para el índice 'i' de la barra de progreso ---
+            for i, (idx, row) in enumerate(df_work.iterrows()):
+                
+                # Calculamos el progreso seguro (0.0 a 1.0)
+                valor_progreso = min(1.0, (i + 1) / total_items)
+                progreso.progress(valor_progreso, text=f"Procesando: {row.Producto}...")
                 
                 farm_id = row['Farmacia_ID']
                 prod = row['Producto']
                 cat = row['Categoria']
                 stock_ini = row['Stock_Actual']
-                precio = row['Precio']
+                precio = row[col_precio]
                 
                 key = f"{farm_id}::{prod}"
                 m_info = modelos.get(key)
@@ -173,25 +181,18 @@ if df_total is not None and datos_modelos is not None:
                 prod_id = f"{prod} ({farm_id})"
                 
                 if dia_rotura != "OK":
-                    # Guardamos gráfico
-                    df_g = pd.DataFrame({
+                    graficos_data.append(pd.DataFrame({
                         'Dia': range(1, dias_sim+1), 
                         'Stock': stock_evolucion, 
                         'ID': prod_id
-                    })
-                    graficos_data.append(df_g)
+                    }))
                     
-                    # --- CREACIÓN SEGURA DEL DICCIONARIO ---
-                    # Creamos el item paso a paso para evitar errores de sintaxis
                     item = {}
                     item["Farmacia"] = farm_id
                     item["Producto"] = prod
                     item["Día Rotura"] = dia_rotura
                     item["Stock Inicial"] = stock_ini
-                    
-                    valor_perdido = abs(stock) * precio
-                    item["Ventas Perdidas (€)"] = f"{valor_perdido:.2f} €"
-                    
+                    item["Ventas Perdidas (€)"] = f"{(abs(stock) * precio):.2f} €"
                     item["ID"] = prod_id
                     item["Dias_Num"] = rotura_num
                     
@@ -199,7 +200,7 @@ if df_total is not None and datos_modelos is not None:
             
             progreso.empty()
             
-            # MOSTRAR RESULTADOS
+            # Resultados
             fecha_inicio = (fecha_max + timedelta(days=1)).strftime('%d-%b-%Y')
             fecha_fin = (fecha_max + timedelta(days=dias_sim)).strftime('%d-%b-%Y')
             st.subheader(f"Horizonte: {fecha_inicio} al {fecha_fin}")
@@ -210,10 +211,7 @@ if df_total is not None and datos_modelos is not None:
             if not resultados_tabla:
                 st.success("✅ El stock soporta el escenario simulado.")
             else:
-                df_res = pd.DataFrame(resultados_tabla)
-                df_res = df_res.sort_values('Dias_Num')
-                
-                # Gráfico
+                df_res = pd.DataFrame(resultados_tabla).sort_values('Dias_Num')
                 top5_ids = df_res.head(5)['ID'].tolist()
                 
                 if graficos_data:
@@ -230,7 +228,6 @@ if df_total is not None and datos_modelos is not None:
                     linea = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='red').encode(y='y')
                     st.altair_chart(c + linea, use_container_width=True)
                 
-                # Tabla
                 st.subheader("Detalle de Roturas")
                 def estilo_rojo(s):
                     return ['background-color: #8B0000; color: white'] * len(s)

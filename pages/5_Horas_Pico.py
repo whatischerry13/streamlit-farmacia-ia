@@ -52,7 +52,7 @@ st.title("Análisis de Demanda Horaria (Matriz de Demanda)")
 st.info("""
 **¿Para qué sirve esto?**
 Esta página analiza *cuándo* se producen las ventas. El gráfico principal es un mapa de calor que cruza el **Día de la Semana** con la **Hora del Día** para encontrar las "zonas calientes" de actividad en la farmacia.
-""", icon="ℹ️")
+""")
 
 st.warning("""
 **Nota sobre la Calidad de los Datos:**
