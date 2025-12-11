@@ -104,7 +104,7 @@ def generar_datos_actualizados():
         # Ordenar por fecha
         df_completo = df_completo.sort_values('Fecha')
         
-        # Guardar (usando el formato correcto para tu CSV: ; y , decimal)
+        # Guardar (usando el formato correcto para mi CSV: ; y , decimal)
         df_completo.to_csv(
             ARCHIVO_ACTUALIZADO, 
             index=False, 

@@ -53,11 +53,11 @@ st.info("""
 **¿Para qué sirve esto?**
 Esta página va más allá de las ventas brutas. Analiza el **beneficio (margen)** de cada producto y farmacia.
 Permite identificar qué productos son "vacas lecheras" (alto volumen, bajo margen) y cuáles son "joyas ocultas" (bajo volumen, alto margen).
-""") # Usamos el 'st.info' neutro, sin icono
+""") 
 
 df_total = cargar_datos()
 if df_total is not None:
-    # --- MEJORA: Eliminamos el st.info molesto. La carga es silenciosa. ---
+    
     df_rentabilidad = simular_y_calcular_rentabilidad(df_total)
 
     # --- FILTROS EN LA BARRA LATERAL ---

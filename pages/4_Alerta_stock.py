@@ -57,8 +57,6 @@ def simular_stock_actual(_df_total):
     return df_grp[['Farmacia_ID', 'Producto', 'Stock_Actual']]
 
 # --- LÓGICA DE PREDICCIÓN PREMIUM (RECURSIVA - 16 FEATURES) ---
-# Esta función es la CLAVE para arreglar el error. Genera las mismas 16 columnas que el entrenamiento.
-
 def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     row = pd.DataFrame({'ds': [pd.to_datetime(fecha_obj)]})
     
@@ -222,6 +220,11 @@ if df_total is not None and datos_modelos is not None:
                     elif d_num <= 7: prioridad = "Media"
                     else: prioridad = "Baja"
                 
+                # Recuperar métricas de forma segura (CORRECCIÓN)
+                rmse_val = 0.0
+                if 'metrics' in model_info:
+                    rmse_val = model_info['metrics'].get('rmse', 0.0)
+
                 # Añadimos todos a la tabla de detalle
                 resultados.append({
                     "Farmacia": row.Farmacia_ID,
@@ -231,7 +234,7 @@ if df_total is not None and datos_modelos is not None:
                     "Stock Actual": row.Stock_Actual,
                     "Stock Útil": int(stock_util),
                     "Demanda Prevista": int(demanda_total),
-                    "RMSE Modelo": f"{model_info['rmse']:.1f}"
+                    "RMSE Modelo": f"{rmse_val:.1f}" # <--- LÍNEA CORREGIDA
                 })
             
             progreso.empty()

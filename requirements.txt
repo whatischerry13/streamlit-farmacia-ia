@@ -1,11 +1,14 @@
 pandas
 xgboost
-altair==5.3.0
-streamlit==1.36.0
+altair
+streamlit
 streamlit-folium
 scikit-learn
 mlxtend
 statsmodels
 pydeck
 joblib
-holidays  
+holidays
+openmeteo-requests
+requests-cache
+retry-requests

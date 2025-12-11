@@ -81,7 +81,7 @@ st.info("""
 **¿Para qué sirve esto?**
 Esta página agrupa automáticamente tus farmacias en **'segmentos'** (ej. "Alto Crecimiento", "Enfocadas en Invierno") basándose en su rendimiento y tipo de ventas. 
 Permite crear **estrategias de marketing y stock personalizadas** para cada grupo. Es una herramienta de **Machine Learning No Supervisado (KMeans)**.
-""", icon="ℹ️")
+""")
 
 df_total = cargar_datos()
 if df_total is not None:

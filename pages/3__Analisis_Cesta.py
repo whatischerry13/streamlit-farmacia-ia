@@ -86,7 +86,7 @@ st.info("""
 **¿Para qué sirve esto?**
 Esta sección utiliza un algoritmo de Machine Learning (Apriori) para analizar las transacciones (simuladas) y encontrar "reglas de asociación". 
 Responde a la pregunta: *"El cliente que compró el Producto A, ¿qué más es probable que compre en la misma transacción?"*
-""", icon="ℹ️")
+""")
 
 # --- MEJORA PROFESIONAL: Advertencia sobre los datos ---
 st.warning("""
