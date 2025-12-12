@@ -12,3 +12,7 @@ holidays
 openmeteo-requests
 requests-cache
 retry-requests
+plotly
+matplotlib
+seaborn
+numpy
