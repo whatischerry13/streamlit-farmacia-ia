@@ -93,7 +93,6 @@ with tab_global:
     n_modelos = len(modelos)
     df_metrics = pd.DataFrame([m['metrics'] for m in modelos.values()])
     
-    # Explicación clara sobre "Qué modelos"
     st.info(f"""
     **Arquitectura de Micro-Modelos:** Este sistema no utiliza una única IA genérica. Se han entrenado **{n_modelos} modelos especialistas independientes**.
     
@@ -136,7 +135,7 @@ with tab_global:
 # TAB 2: INSPECTOR INDIVIDUAL
 # ==============================================================================
 with tab_inspector:
-    st.header("Auditoría Individual XGBoost")
+    st.header("Auditoría Individual")
     st.markdown("Seleccione una combinación específica para inspeccionar su 'Caja Negra'.")
     
     claves = list(modelos.keys())
@@ -165,7 +164,6 @@ with tab_inspector:
             st.text(f"• Accuracy:     {m['accuracy']:.1%}")
 
         with col_der:
-            # Sección de Hiperparámetros (Top 4)
             st.subheader("Configuración del Algoritmo")
             params = modelo['model'].get_params()
             
@@ -177,12 +175,15 @@ with tab_inspector:
             
             st.markdown("---")
             
-            # Sección de Importancia de Variables
             st.subheader("Factores de Decisión")
             st.caption("Variables que más influyen en la predicción de este producto específico.")
             
             if 'importance' in modelo:
                 df_imp = traducir_variables(modelo['importance'].head(8))
+                
+                # --- CORRECCIÓN DEL ERROR JSON SERIALIZABLE ---
+                # Convertimos el max() a float nativo de Python
+                max_val = float(df_imp['Importancia'].max())
                 
                 st.dataframe(
                     df_imp,
@@ -192,7 +193,7 @@ with tab_inspector:
                             "Peso Relativo",
                             format="%.4f",
                             min_value=0,
-                            max_value=df_imp['Importancia'].max(),
+                            max_value=max_val, # Usamos el valor convertido
                         )
                     },
                     use_container_width=True,
@@ -249,21 +250,17 @@ with tab_arq:
     st.header("Pipeline de Datos (End-to-End)")
     st.markdown("Flujo técnico desde la ingesta de datos brutos hasta la inferencia en tiempo real.")
     
-    # Diagrama Graphviz PROFESIONAL (Estilo Flat)
     st.graphviz_chart("""
     digraph {
-        # Configuración Global
         rankdir=LR;
         bgcolor="transparent";
         splines=ortho;
         nodesep=0.8;
         ranksep=1.0;
         
-        # Estilos de Nodos
         node [shape=box, style="filled,rounded", fontname="Sans-Serif", fontsize=10, penwidth=0, margin=0.2];
         edge [fontname="Sans-Serif", fontsize=9, color="#6c757d", penwidth=1.5];
 
-        # Definición de Nodos con Colores Corporativos Suaves
         RAW [label="CSV Ventas\n+ Clima", fillcolor="#e9ecef", fontcolor="#495057"];
         
         subgraph cluster_preprocess {
@@ -272,7 +269,6 @@ with tab_arq:
             fontsize=10;
             style=dashed;
             color="#adb5bd";
-            
             FEAT [label="Transformación\nCíclica (Sin/Cos)", fillcolor="#d1e7dd", fontcolor="#0f5132"];
             LAGS [label="Lags & Rolling\nStats", fillcolor="#d1e7dd", fontcolor="#0f5132"];
         }
@@ -283,7 +279,6 @@ with tab_arq:
             fontsize=10;
             style=dashed;
             color="#adb5bd";
-            
             SPLIT [label="TimeSeries\nSplit", fillcolor="#cfe2ff", fontcolor="#084298"];
             XGB [label="XGBoost\nRegressor", fillcolor="#cfe2ff", fontcolor="#084298"];
             OPT [label="Randomized\nSearch CV", fillcolor="#cfe2ff", fontcolor="#084298"];
@@ -297,12 +292,10 @@ with tab_arq:
             fontsize=10;
             style=dashed;
             color="#adb5bd";
-            
             LOAD [label="Carga en Memoria\n(@st.cache)", fillcolor="#e2e3e5", fontcolor="#41464b"];
             PRED [label="Predicción\nRecursiva", fillcolor="#f8d7da", fontcolor="#842029"];
         }
 
-        # Conexiones
         RAW -> FEAT;
         FEAT -> LAGS;
         LAGS -> SPLIT;
@@ -316,9 +309,7 @@ with tab_arq:
     
     st.divider()
     
-    # Detalle Técnico Ampliado
     st.subheader("Profundización Técnica")
-    
     c1, c2 = st.columns(2)
     
     with c1:

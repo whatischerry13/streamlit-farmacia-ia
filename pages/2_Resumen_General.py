@@ -40,11 +40,11 @@ def cargar_modelos(file_name='modelos_farmacia.joblib'):
     except FileNotFoundError:
         return None
 
-# --- COMPONENTE VISUAL: FICHA TÉCNICA (SIDEBAR) ---
+# --- COMPONENTE VISUAL: FICHA TÉCNICA (SIDEBAR) 
 def render_ficha_tecnica(model_data, key, last_train_date):
     """Renderiza la ficha técnica del modelo en el sidebar."""
     if not model_data:
-        st.sidebar.info("⚠️ No hay modelo para esta selección.")
+        st.sidebar.info("No hay modelo para esta selección.")
         return
 
     # CORRECCIÓN AQUÍ: Accedemos al sub-diccionario 'metrics'
@@ -52,12 +52,12 @@ def render_ficha_tecnica(model_data, key, last_train_date):
     model_obj = model_data.get('model', None)
     
     st.sidebar.divider()
-    st.sidebar.header("🧬 Ficha Técnica Modelo")
+    st.sidebar.header("Ficha Técnica Modelo")
     
     # 1. Info General
     st.sidebar.caption(f"ID: {key}")
     if isinstance(last_train_date, datetime):
-        st.sidebar.text(f"📅 Entrenado: {last_train_date.strftime('%d/%m/%Y')}")
+        st.sidebar.text(f"Entrenado: {last_train_date.strftime('%d/%m/%Y')}")
     
     # 2. Hiperparámetros (Top 4)
     if model_obj:
@@ -69,7 +69,7 @@ def render_ficha_tecnica(model_data, key, last_train_date):
         c2.metric("Subsample", params.get('subsample'))
 
     # 3. Métricas Visuales (Radar)
-    st.sidebar.subheader("📊 Rendimiento")
+    st.sidebar.subheader("Rendimiento")
     
     radar_vals = [
         metrics.get('accuracy', 0),
@@ -102,7 +102,7 @@ def render_ficha_tecnica(model_data, key, last_train_date):
     st.sidebar.metric("F1-Score", f"{metrics.get('f1_score', 0):.2f}")
 
 
-# --- LÓGICA DE PREDICCIÓN (RECURSIVA) ---
+# --- LÓGICA DE PREDICCIÓN (RECURSIVA) 
 def crear_features_un_paso(historia_y, fecha_obj, df_clima):
     # Generación de las 16 variables exactas que espera el modelo
     row = pd.DataFrame({'ds': [pd.to_datetime(fecha_obj)]})
@@ -186,7 +186,7 @@ if df_total is not None:
         fecha_ent = datos_modelos.get('fecha_entrenamiento')
         render_ficha_tecnica(info_mod, key_mod, fecha_ent)
     else:
-        st.sidebar.warning("⚠️ Modelos no cargados.")
+        st.sidebar.warning("Modelos no cargados.")
 
     # --- CUERPO ---
     f_min, f_max = df_total['Fecha'].min(), df_total['Fecha'].max()
@@ -254,7 +254,7 @@ if df_total is not None:
                     ).interactive()
                     st.altair_chart(c, use_container_width=True)
                     
-                    # Feature Importance (Si existe)
+                    # Feature Importance
                     if 'importance' in info_mod:
                         # Traducción simple
                         traducciones = {

@@ -116,7 +116,7 @@ if df_total is not None:
         "Soporte Mínimo (Frecuencia):", 
         min_value=0.001, 
         max_value=0.1, 
-        value=0.003,  # <-- ¡VALOR POR DEFECTO CORREGIDO!
+        value=0.003,  
         step=0.001, 
         format="%.3f",
         help="Frecuencia mínima de un grupo de productos para ser analizado. Un valor más bajo encontrará más reglas."

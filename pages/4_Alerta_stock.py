@@ -125,12 +125,12 @@ def predecir_demanda_futura(modelo, df_hist_prod, df_clima, dias_futuros, fecha_
     return np.array(predicciones)
 
 # --- INTERFAZ ---
-st.title("Sistema de Alerta de Stock (IA Premium)")
+st.title("Sistema de Alerta de Stock")
 st.info("""
 **Herramienta de Priorización Inteligente**
 Utiliza modelos XGBoost optimizados con variables climáticas y de tendencia para predecir el agotamiento de stock.
 Clasifica automáticamente la urgencia de los pedidos basándose en los días restantes de inventario útil.
-""", icon="ℹ️")
+""")
 
 df_total = cargar_datos()
 df_clima = cargar_clima()
@@ -197,7 +197,7 @@ if df_total is not None and datos_modelos is not None:
                     (df_total['Producto'] == row.Producto)
                 ]
                 
-                # --- PREDICCIÓN RECURSIVA (PREMIUM) ---
+                # --- PREDICCIÓN RECURSIVA 
                 preds = predecir_demanda_futura(model_info['model'], df_hist_prod, df_clima, dias_horizonte, fecha_max_hist)
                 demanda_total = preds.sum()
                 
