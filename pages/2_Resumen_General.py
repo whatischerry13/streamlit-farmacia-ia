@@ -5,6 +5,8 @@ import streamlit as st
 import warnings
 import joblib
 import holidays
+import matplotlib.pyplot as plt
+import seaborn as sns
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from statsmodels.tsa.seasonal import seasonal_decompose
