@@ -28,7 +28,7 @@ def generar_datos_actualizados():
         print("¡Los datos ya están actualizados! No es necesario generar nada.")
         return
 
-    # 2. Crear un "Catálogo Maestro" de productos y farmacias
+    # 2. Crear un Catálogo de productos y farmacias
     # Esto asegura que usamos los mismos precios, categorías y zonas que ya existen
     catalogo = df[['Farmacia_ID', 'Zona_Farmacia', 'Producto', 'Categoria', 'Precio_Unitario_€']].drop_duplicates()
     
@@ -77,7 +77,7 @@ def generar_datos_actualizados():
                 # Generar cantidad basada en la media histórica + ruido aleatorio
                 media_prod = medias_venta.get(row['Producto'], 10)
                 cantidad_base = int(np.random.normal(media_prod, media_prod * 0.3)) # Variación del 30%
-                cantidad = int(max(1, cantidad_base * multiplicador_cantidad)) # Nunca menos de 1
+                cantidad = int(max(1, cantidad_base * multiplicador_cantidad)) #1 como mínimo para evitar 0 o negativos
                 
                 total_venta = round(cantidad * row['Precio_Unitario_€'], 2)
                 

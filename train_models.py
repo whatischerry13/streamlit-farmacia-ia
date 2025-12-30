@@ -117,7 +117,7 @@ def entrenar_y_optimizar(df_serie, df_clima):
     if len(df_diario) < 90: return None, None, None, None
 
     # Calcular la media para usarla como umbral de clasificación
-    umbral_media = df_diario['y'].mean()
+    umbral_media = df_diario['y'].mean() #esto podria causar data leakage si la base de datos no fuera sintetica
 
     df_features = crear_features_premium(df_diario, df_clima)
     if df_features.empty: return None, None, None, None
@@ -133,29 +133,29 @@ def entrenar_y_optimizar(df_serie, df_clima):
     y = df_features[target]
 
     # Split
-    test_size = int(len(X) * 0.15)
-    X_train, X_test = X.iloc[:-test_size], X.iloc[-test_size:]
-    y_train, y_test = y.iloc[:-test_size], y.iloc[-test_size:]
+    test_size = int(len(X) * 0.15) # 15% para test final
+    X_train, X_test = X.iloc[:-test_size], X.iloc[-test_size:] # Dividir manteniendo orden temporal
+    y_train, y_test = y.iloc[:-test_size], y.iloc[-test_size:] 
 
     # Grid Search Ligero
     param_grid = {
-        'n_estimators': [300, 500],
-        'learning_rate': [0.01, 0.05],       
-        'max_depth': [3, 5],
-        'subsample': [0.8],
-        'colsample_bytree': [0.8]
+        'n_estimators': [300, 500], # Número de árboles
+        'learning_rate': [0.01, 0.05],   # Tasa de aprendizaje     
+        'max_depth': [3, 5],          # Profundidad máxima del árbol
+        'subsample': [0.8],          # Submuestreo de filas para cada árbol
+        'colsample_bytree': [0.8]      # Submuestreo de columnas para cada árbol para reducir overfitting
     }
 
-    model_base = xgb.XGBRegressor(objective='reg:squarederror', random_state=42, n_jobs=-1)
+    model_base = xgb.XGBRegressor(objective='reg:squarederror', random_state=42, n_jobs=-1) #reg:squarederror para regresión
     search = RandomizedSearchCV(
-        estimator=model_base,
-        param_distributions=param_grid,
-        n_iter=5,
-        scoring='neg_root_mean_squared_error',
-        cv=TimeSeriesSplit(n_splits=3),
-        verbose=0,
-        n_jobs=-1,
-        random_state=42
+        estimator=model_base, 
+        param_distributions=param_grid, 
+        n_iter=5, # Número de combinaciones a probar para sacar el mejor modelo
+        scoring='neg_root_mean_squared_error', # Métrica de evaluación de regresión
+        cv=TimeSeriesSplit(n_splits=3), # para validación temporal de series temporales
+        verbose=0, 
+        n_jobs=-1, # Usar todos los núcleos disponibles
+        random_state=42 
     )
 
     search.fit(X_train, y_train)
