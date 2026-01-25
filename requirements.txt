@@ -16,3 +16,4 @@ plotly
 matplotlib
 seaborn
 numpy
+altair<5
